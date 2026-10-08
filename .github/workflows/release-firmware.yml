@@ -1,4 +1,4 @@
-name: Release Firmware
+name: Release Firmware and Android APK
 
 on:
   push:
@@ -21,14 +21,33 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build firmware
+      - name: Build ESP32 firmware
         run: pio run -e esp32dev
 
       - name: Copy firmware
         run: cp .pio/build/esp32dev/firmware.bin firmware.bin
 
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build Android APK
+        working-directory: android-bridge
+        run: gradle :app:assembleDebug --stacktrace
+
+      - name: Copy APK
+        run: cp android-bridge/app/build/outputs/apk/debug/app-debug.apk WazeHUD-Bridge.apk
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: firmware.bin
+          files: |
+            firmware.bin
+            WazeHUD-Bridge.apk
           generate_release_notes: true
