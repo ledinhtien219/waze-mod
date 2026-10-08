@@ -9,6 +9,9 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====
 #define TFT_CS   27
@@ -20,8 +23,11 @@
 
 static const char *AP_NAME = "WAZE-HUD";
 static const char *AP_PASS = "12345678";
+static const char *BLE_DEVICE_NAME = "WAZE-HUD";
+static const char *BLE_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
+static const char *BLE_RX_UUID      = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.1.0";
+static const char *FW_VERSION = "1.2.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -32,6 +38,8 @@ Preferences prefs;
 String wifiSSID;
 String wifiPASS;
 bool apMode = false;
+bool bleConnected = false;
+String bleRxBuffer;
 
 struct AppSettings {
   bool mirrorHud = false;
@@ -186,6 +194,30 @@ AlertType parseAlert(String s) {
   if (s == "high_risk") return ALERT_HIGH_RISK;
   if (s == "animal") return ALERT_ANIMAL;
   return ALERT_NONE;
+}
+
+bool applyHudPayload(const String &payload) {
+  JsonDocument doc;
+  if (deserializeJson(doc, payload)) return false;
+
+  if (!doc["turn"].isNull()) hud.turn = parseTurn(String((const char*)doc["turn"]));
+  if (!doc["distance_m"].isNull()) hud.distanceM = constrain((int)doc["distance_m"], 0, 65000);
+  if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
+  if (!doc["speed"].isNull()) hud.speed = constrain((int)doc["speed"], 0, 299);
+  if (!doc["speed_limit"].isNull()) hud.speedLimit = constrain((int)doc["speed_limit"], 0, 199);
+  if (!doc["remaining_km"].isNull()) hud.remainingKm = max(0.0f, (float)doc["remaining_km"]);
+  if (!doc["eta"].isNull()) hud.eta = String((const char*)doc["eta"]);
+  if (!doc["route"].isNull()) hud.route = String((const char*)doc["route"]);
+
+  JsonObject alert = doc["alert"];
+  if (!alert.isNull()) {
+    if (!alert["type"].isNull()) hud.alert = parseAlert(String((const char*)alert["type"]));
+    if (!alert["distance_m"].isNull()) hud.alertDistanceM = constrain((int)alert["distance_m"], 0, 65000);
+  }
+
+  hud.updatedAt = millis();
+  hud.valid = true;
+  return true;
 }
 
 bool alertEnabled(AlertType a) {
@@ -454,13 +486,75 @@ void drawHud() {
 
 void drawWaiting() {
   tft.fillScreen(C_BG);
-  textCentered("WAZE HUD", 0, 45, 320, 4, C_BLUE);
-  textCentered(apMode ? "SETUP MODE" : "WAITING FOR DATA", 0, 105, 320, 2, C_WHITE);
-  tft.setTextSize(2);
-  tft.setTextColor(C_YELLOW, C_BG);
+  textCentered("WAZE HUD", 0, 36, 320, 4, C_BLUE);
+  textCentered(bleConnected ? "BLE CONNECTED" : "BLE: WAZE-HUD", 0, 100, 320, 2, bleConnected ? C_GREEN : C_WHITE);
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-  textCentered(ip, 0, 145, 320, 2, C_YELLOW);
-  textCentered("Open IP in browser", 0, 180, 320, 1, C_GREY);
+  textCentered(ip, 0, 142, 320, 2, C_YELLOW);
+  textCentered(apMode ? "Wi-Fi setup + Web Setting" : "Web Setting / OTA", 0, 178, 320, 1, C_GREY);
+}
+
+class HudBleServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *server) override {
+    bleConnected = true;
+    if (!hud.valid) drawWaiting();
+    Serial.println("BLE client connected");
+  }
+
+  void onDisconnect(BLEServer *server) override {
+    bleConnected = false;
+    bleRxBuffer = "";
+    if (!hud.valid) drawWaiting();
+    BLEDevice::getAdvertising()->start();
+    Serial.println("BLE client disconnected; advertising restarted");
+  }
+};
+
+class HudBleRxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *characteristic) override {
+    auto raw = characteristic->getValue();
+    String chunk(raw.c_str());
+
+    for (size_t i = 0; i < chunk.length(); i++) {
+      char c = chunk[i];
+      if (c == '\n') {
+        String payload = bleRxBuffer;
+        bleRxBuffer = "";
+        payload.trim();
+        if (payload.length() && applyHudPayload(payload)) {
+          drawHud();
+        }
+      } else if (c != '\r') {
+        if (bleRxBuffer.length() < 1536) {
+          bleRxBuffer += c;
+        } else {
+          bleRxBuffer = "";
+        }
+      }
+    }
+  }
+};
+
+void setupBLE() {
+  BLEDevice::init(BLE_DEVICE_NAME);
+
+  BLEServer *bleServer = BLEDevice::createServer();
+  bleServer->setCallbacks(new HudBleServerCallbacks());
+
+  BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
+  BLECharacteristic *rx = service->createCharacteristic(
+    BLE_RX_UUID,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+  );
+  rx->setCallbacks(new HudBleRxCallbacks());
+
+  service->start();
+
+  BLEAdvertising *advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->start();
+
+  Serial.println("BLE advertising as WAZE-HUD");
 }
 
 
@@ -657,26 +751,10 @@ void setupServer() {
   });
 
   server.on("/hud", HTTP_POST, []() {
-    JsonDocument doc;
-    if (deserializeJson(doc, server.arg("plain"))) {
+    if (!applyHudPayload(server.arg("plain"))) {
       server.send(400, "application/json", "{\"ok\":false,\"error\":\"json\"}");
       return;
     }
-    if (!doc["turn"].isNull()) hud.turn = parseTurn(String((const char*)doc["turn"]));
-    if (!doc["distance_m"].isNull()) hud.distanceM = constrain((int)doc["distance_m"], 0, 65000);
-    if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
-    if (!doc["speed"].isNull()) hud.speed = constrain((int)doc["speed"], 0, 299);
-    if (!doc["speed_limit"].isNull()) hud.speedLimit = constrain((int)doc["speed_limit"], 0, 199);
-    if (!doc["remaining_km"].isNull()) hud.remainingKm = max(0.0f, (float)doc["remaining_km"]);
-    if (!doc["eta"].isNull()) hud.eta = String((const char*)doc["eta"]);
-    if (!doc["route"].isNull()) hud.route = String((const char*)doc["route"]);
-    JsonObject alert = doc["alert"];
-    if (!alert.isNull()) {
-      if (!alert["type"].isNull()) hud.alert = parseAlert(String((const char*)alert["type"]));
-      if (!alert["distance_m"].isNull()) hud.alertDistanceM = constrain((int)alert["distance_m"],0,65000);
-    }
-    hud.updatedAt = millis();
-    hud.valid = true;
     drawHud();
     server.send(200, "application/json", "{\"ok\":true}");
   });
@@ -744,7 +822,7 @@ void setupServer() {
   server.on("/state", HTTP_GET, []() {
     JsonDocument d;
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
-    d["wifi"]=WiFi.status()==WL_CONNECTED; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
+    d["wifi"]=WiFi.status()==WL_CONNECTED; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
 
@@ -786,6 +864,7 @@ void setup() {
   tft.fillScreen(C_BG);
 
   loadAppSettings();
+  setupBLE();
   connectWiFi();
   setupServer();
   drawWaiting();

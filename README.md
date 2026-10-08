@@ -17,6 +17,7 @@ HUD 320x240 dành cho **ESP32 DevKit V1 + ILI9341**. TFT không cần cảm ứn
   - thông tin thiết bị.
 - Cấu hình lưu bằng ESP32 Preferences.
 - Android bridge gồm NotificationListenerService + AccessibilityService.
+- BLE GATT: điện thoại quét thiết bị `WAZE-HUD` và truyền dữ liệu HUD trực tiếp qua BLE; Wi-Fi chỉ còn dùng cho Web Setting, test HTTP và OTA.
 - GitHub Actions build firmware.
 - GitHub Release tự đính kèm `firmware.bin` khi push tag `v*`.
 
@@ -40,6 +41,17 @@ Logic 3.3V.
 - ArduinoJson 7.x
 
 ## Sử dụng
+
+### Kết nối BLE
+
+1. Nạp firmware v1.2.0 trở lên cho ESP32.
+2. Mở app Android Bridge và cấp quyền Bluetooth/BLE.
+3. Bấm **Quét & kết nối WAZE-HUD**.
+4. Khi trạng thái báo **Đã kết nối WAZE-HUD**, dữ liệu điều hướng được gửi qua BLE.
+
+ESP32 advertise BLE với tên `WAZE-HUD`. Service UUID: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`, RX characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`. JSON được gửi theo từng chunk và kết thúc bằng ký tự newline.
+
+### Wi-Fi / Web Setting
 
 Lần đầu nếu chưa có Wi-Fi, ESP32 tạo AP:
 

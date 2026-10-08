@@ -44,10 +44,6 @@ object HudSender {
         if (now - lastSend < 180) return
         lastSend = now
 
-        val ip = context.getSharedPreferences("hud", Context.MODE_PRIVATE)
-            .getString("ip", "")?.trim().orEmpty()
-        if (ip.isBlank()) return
-
         val obj = JSONObject()
         packet.turn?.let { obj.put("turn", it) }
         packet.distanceM?.let { obj.put("distance_m", it) }
@@ -65,7 +61,17 @@ object HudSender {
             obj.put("alert", a)
         }
 
-        thread(name = "HudSender") {
+        if (BleHudClient.sendJson(obj.toString())) return
+
+        // Try to restore a previously paired BLE connection for future packets.
+        BleHudClient.connectSaved(context.applicationContext)
+
+        // HTTP remains as a fallback and for development/testing.
+        val ip = context.getSharedPreferences("hud", Context.MODE_PRIVATE)
+            .getString("ip", "")?.trim().orEmpty()
+        if (ip.isBlank()) return
+
+        thread(name = "HudSenderHttpFallback") {
             try {
                 val c = (URL("http://$ip/hud").openConnection() as HttpURLConnection).apply {
                     requestMethod = "POST"
@@ -77,7 +83,8 @@ object HudSender {
                 c.outputStream.use { it.write(obj.toString().toByteArray()) }
                 c.inputStream.close()
                 c.disconnect()
-            } catch (_: Exception) {}
+            } catch (_: Exception) {
+            }
         }
     }
 }
