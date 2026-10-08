@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.4";
+static const char *FW_VERSION = "1.3.5";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -199,6 +199,9 @@ struct HudState {
   String road = "";
   int speed = 0;
   int speedLimit = 0;
+  bool overSpeed = false;
+  int nextSpeedLimit = 0;
+  int nextSpeedDistanceM = -1;
   float remainingKm = 0;
   String eta = "--:--";
   String route = "";
@@ -220,6 +223,8 @@ HudState renderedHud;
 AppSettings renderedSettings;
 bool hudRenderValid = false;
 bool renderedLinkLost = false;
+bool overspeedBorderVisible = false;
+uint32_t lastOverspeedBlink = 0;
 
 const uint16_t C_BG      = ILI9341_BLACK;
 const uint16_t C_WHITE   = ILI9341_WHITE;
@@ -491,6 +496,17 @@ bool applyHudPayload(const String &payload) {
     if (!doc["spd"].isNull()) hud.speed = constrain((int)doc["spd"], 0, 299);
     if (!doc["lim"].isNull()) hud.speedLimit = constrain((int)doc["lim"], 0, 199);
 
+    if (!doc["over"].isNull()) {
+      hud.overSpeed = ((int)doc["over"]) != 0;
+    } else {
+      hud.overSpeed = hud.speedLimit > 0 && hud.speed > hud.speedLimit;
+    }
+
+    // Next speed limit is encoded as a SPEED_DROP/END_SPEED_RESTRICTION
+    // alert in alrs[], not as a standalone state field.
+    hud.nextSpeedLimit = 0;
+    hud.nextSpeedDistanceM = -1;
+
     int dst = doc["dst"].isNull() ? -1 : (int)doc["dst"];
     hud.distanceM = dst >= 0 ? constrain(dst, 0, 65000) : 0;
 
@@ -527,6 +543,19 @@ bool applyHudPayload(const String &payload) {
       JsonArray alerts = doc["alrs"].as<JsonArray>();
       hud.alertCount = min((size_t)255, alerts.size());
 
+      // Find the nearest future speed-limit change anywhere in alrs[].
+      // It may be the second/third alert while a camera is nearer.
+      for (JsonObject item : alerts) {
+        int kind = (int)(item["k"] | 0);
+        int value = item["v"].isNull() ? 0 : (int)item["v"];
+        if ((kind == 8 || kind == 22) && value > 0 && value != hud.speedLimit) {
+          hud.nextSpeedLimit = constrain(value, 1, 199);
+          int d = (int)(item["d"] | -1);
+          hud.nextSpeedDistanceM = d >= 0 ? constrain(d, 0, 65000) : -1;
+          break;
+        }
+      }
+
       // Be tolerant of producers where only alrs is present.
       if (hud.alertCode == 0 && !alerts.isNull() && alerts.size() > 0) {
         JsonObject first = alerts[0].as<JsonObject>();
@@ -544,6 +573,13 @@ bool applyHudPayload(const String &payload) {
       hud.alertCount = hud.alertCode ? 1 : 0;
     }
 
+    if (hud.nextSpeedLimit == 0 &&
+        (hud.alertCode == 8 || hud.alertCode == 22) &&
+        hud.alertValue > 0 && hud.alertValue != hud.speedLimit) {
+      hud.nextSpeedLimit = constrain(hud.alertValue, 1, 199);
+      hud.nextSpeedDistanceM = hud.alertDistanceM;
+    }
+
     hud.updatedAt = millis();
     hud.valid = true;
     return true;
@@ -555,6 +591,10 @@ bool applyHudPayload(const String &payload) {
   if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
   if (!doc["speed"].isNull()) hud.speed = constrain((int)doc["speed"], 0, 299);
   if (!doc["speed_limit"].isNull()) hud.speedLimit = constrain((int)doc["speed_limit"], 0, 199);
+  if (!doc["over"].isNull()) hud.overSpeed = (bool)doc["over"];
+  else hud.overSpeed = hud.speedLimit > 0 && hud.speed > hud.speedLimit;
+  if (!doc["next_speed_limit"].isNull()) hud.nextSpeedLimit = constrain((int)doc["next_speed_limit"], 0, 199);
+  if (!doc["next_speed_distance_m"].isNull()) hud.nextSpeedDistanceM = constrain((int)doc["next_speed_distance_m"], 0, 65000);
   if (!doc["remaining_km"].isNull()) hud.remainingKm = max(0.0f, (float)doc["remaining_km"]);
   if (!doc["eta"].isNull()) hud.eta = String((const char*)doc["eta"]);
   if (!doc["route"].isNull()) hud.route = String((const char*)doc["route"]);
@@ -910,9 +950,31 @@ void drawTopPanel() {
   tft.print(dist);
 }
 
+void drawMiniSpeedLimit(int cx, int cy, int limit, int radius) {
+  if (limit <= 0) return;
+  tft.fillCircle(cx, cy, radius, C_RED);
+  tft.fillCircle(cx, cy, radius - 3, C_WHITE);
+
+  String n = String(limit);
+  tft.setTextColor(ILI9341_BLACK, C_WHITE);
+  tft.setTextSize(limit >= 100 ? 1 : 2);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(n, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor(cx - w / 2, cy - h / 2);
+  tft.print(n);
+}
+
+String compactDistance(int m) {
+  if (m < 0) return "";
+  if (m < 1000) return String(m) + "m";
+  return String(m / 1000.0f, 1) + "k";
+}
+
 void drawSpeedPanel() {
   tft.fillRoundRect(9, 45, 70, 142, 9, C_BG);
-  tft.drawRoundRect(8, 44, 72, 144, 10, C_DARK);
+  tft.drawRoundRect(8, 44, 72, 144, 10, hud.overSpeed ? C_RED : C_DARK);
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
@@ -920,32 +982,29 @@ void drawSpeedPanel() {
   tft.print("SPEED");
 
   String speed = String(max(0, hud.speed));
-  tft.setTextColor(C_WHITE, C_BG);
+  tft.setTextColor(hud.overSpeed ? C_RED : C_WHITE, C_BG);
   tft.setTextSize(speed.length() >= 3 ? 4 : 5);
 
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(speed, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(44 - w / 2, 82);
+  tft.setCursor(44 - w / 2, 78);
   tft.print(speed);
 
-  tft.setTextColor(C_GREY, C_BG);
-  tft.setTextSize(1);
-  textCentered("km/h", 8, 126, 72, 1, C_GREY);
+  textCentered("km/h", 8, 122, 72, 1, C_GREY);
 
+  // Current and next limit side-by-side.
   if (settings.showSpeedLimit) {
-    // Smaller road-sign style limit so the speed remains the visual priority.
-    int cx = 44;
-    int cy = 160;
-    tft.fillCircle(cx, cy, 18, C_RED);
-    tft.fillCircle(cx, cy, 14, C_WHITE);
+    textCentered("NOW", 8, 136, 34, 1, C_GREY);
+    drawMiniSpeedLimit(25, 159, hud.speedLimit, 15);
 
-    String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
-    tft.setTextColor(ILI9341_BLACK, C_WHITE);
-    tft.setTextSize(hud.speedLimit >= 100 ? 1 : 2);
-    tft.getTextBounds(limit, 0, 0, &x1, &y1, &w, &h);
-    tft.setCursor(cx - w / 2, cy - h / 2);
-    tft.print(limit);
+    if (hud.nextSpeedLimit > 0 && hud.nextSpeedLimit != hud.speedLimit) {
+      textCentered("NEXT", 43, 136, 36, 1, C_BLUE);
+      drawMiniSpeedLimit(61, 159, hud.nextSpeedLimit, 14);
+
+      String d = compactDistance(hud.nextSpeedDistanceM);
+      if (d.length()) textCentered(d, 43, 179, 36, 1, C_GREY);
+    }
   }
 }
 
@@ -1077,6 +1136,9 @@ void drawHud() {
     first ||
     hud.speed != renderedHud.speed ||
     hud.speedLimit != renderedHud.speedLimit ||
+    hud.overSpeed != renderedHud.overSpeed ||
+    hud.nextSpeedLimit != renderedHud.nextSpeedLimit ||
+    hud.nextSpeedDistanceM != renderedHud.nextSpeedDistanceM ||
     settings.showSpeedLimit != renderedSettings.showSpeedLimit;
 
   bool navDirty =
@@ -1591,6 +1653,8 @@ void setupServer() {
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
+    d["over"]=hud.overSpeed; d["next_speed_limit"]=hud.nextSpeedLimit;
+    d["next_speed_distance_m"]=hud.nextSpeedDistanceM;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
 
@@ -1724,6 +1788,29 @@ void setup() {
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
 }
 
+void drawOverspeedBorder(bool visible) {
+  uint16_t color = visible ? C_RED : C_BG;
+  tft.drawRect(0, 0, 320, 240, color);
+  tft.drawRect(1, 1, 318, 238, color);
+  tft.drawRect(2, 2, 316, 236, color);
+}
+
+void updateOverspeedEffect() {
+  bool active = hud.valid && hud.overSpeed &&
+                (millis() - hud.updatedAt <= HUD_TIMEOUT_MS);
+
+  if (active) {
+    if (millis() - lastOverspeedBlink >= 250) {
+      lastOverspeedBlink = millis();
+      overspeedBorderVisible = !overspeedBorderVisible;
+      drawOverspeedBorder(overspeedBorderVisible);
+    }
+  } else if (overspeedBorderVisible) {
+    overspeedBorderVisible = false;
+    drawOverspeedBorder(false);
+  }
+}
+
 void loop() {
   // Drain GATT bytes outside the Bluetooth callback. This prevents TFT/JSON work
   // from blocking acknowledged BLE writes.
@@ -1737,6 +1824,7 @@ void loop() {
 
   server.handleClient();
   maintainWiFi();
+  updateOverspeedEffect();
 
   // Reflect a new DHCP/AP address on the boot/waiting screen.
   String currentIp = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() :
