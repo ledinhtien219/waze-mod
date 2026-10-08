@@ -1,22 +1,28 @@
 # ESP32 Waze HUD Mod
 
-HUD 320x240 dành cho **ESP32 DevKit V1 + ILI9341**, nhận dữ liệu điều hướng/cảnh báo từ điện thoại Android chạy Waze/Waze mod qua HTTP JSON.
+HUD 320x240 dành cho **ESP32 DevKit V1 + ILI9341**. TFT không cần cảm ứng: màn hình chỉ hiển thị HUD, toàn bộ cấu hình thực hiện bằng web trên điện thoại.
 
-## Mục tiêu
+## Tính năng
 
-- Giao diện đúng tỉ lệ màn hình 320x240.
-- Nền đen, chữ/biểu tượng tương phản cao.
-- Mũi tên điều hướng lớn ở giữa.
-- Hiển thị tốc độ hiện tại + biển giới hạn tốc độ.
-- Cảnh báo gần nhất: police, camera, crash, traffic, roadworks, pothole, object, car on shoulder, broken light, closure, bad weather, blocked lane, high-risk area, animal.
-- Hiển thị khoảng cách tới lần rẽ, tên đường, quãng đường còn lại, ETA và tên tuyến.
-- Không dùng bitmap ngoài: icon được vẽ bằng primitive để nhẹ flash và dễ mirror HUD.
+- HUD điều hướng 320x240 nền đen, tương phản cao.
+- Tốc độ hiện tại và biển giới hạn tốc độ.
+- Mũi tên rẽ, khoảng cách, tên đường, ETA, quãng đường còn lại và tên tuyến.
+- Cảnh báo Waze/Waze mod: police, camera, crash, traffic, roadworks, pothole, object, car on shoulder, broken light, closure, bad weather, blocked lane, high-risk area, animal.
+- Web Setting trên điện thoại:
+  - hiển thị HUD;
+  - cảnh báo;
+  - Wi-Fi;
+  - trạng thái Android bridge;
+  - kiểm tra và cập nhật firmware online;
+  - thông tin thiết bị.
+- Cấu hình lưu bằng ESP32 Preferences.
+- Android bridge gồm NotificationListenerService + AccessibilityService.
+- GitHub Actions build firmware.
+- GitHub Release tự đính kèm `firmware.bin` khi push tag `v*`.
 
 ## Phần cứng
 
-ESP32 DevKit V1 + ILI9341 SPI 320x240:
-
-| ILI9341 | ESP32 |
+| ILI9341 | ESP32 DevKit V1 |
 |---|---:|
 | CS | GPIO27 |
 | RST | GPIO25 |
@@ -25,24 +31,27 @@ ESP32 DevKit V1 + ILI9341 SPI 320x240:
 | SCK | GPIO14 |
 | MISO | GPIO35 |
 
-Nguồn logic 3.3V.
+Logic 3.3V.
 
-## Thư viện Arduino
+## Cài thư viện Arduino
 
 - Adafruit GFX Library
 - Adafruit ILI9341
 - ArduinoJson 7.x
 
-## API
+## Sử dụng
 
-ESP32 mở endpoint:
+Lần đầu nếu chưa có Wi-Fi, ESP32 tạo AP:
 
-```
-POST /hud
-Content-Type: application/json
-```
+- SSID: `WAZE-HUD`
+- Password: `12345678`
+- Web: `http://192.168.4.1`
 
-Ví dụ:
+Sau khi cấu hình Wi-Fi, mở địa chỉ IP ESP32 bằng trình duyệt trên điện thoại. TFT không cần cảm ứng.
+
+## API HUD
+
+`POST /hud`
 
 ```json
 {
@@ -61,32 +70,29 @@ Ví dụ:
 }
 ```
 
-Các giá trị `turn`: `straight`, `left`, `right`, `slight_left`, `slight_right`, `uturn`, `roundabout`.
+Xem thêm `PROTOCOL.md`.
 
-Các giá trị `alert.type`: `none`, `police`, `camera`, `crash`, `traffic`, `roadworks`, `pothole`, `object`, `car_on_shoulder`, `broken_light`, `closure`, `bad_weather`, `blocked_lane`, `high_risk`, `animal`.
+## OTA online
 
-## Test nhanh
+Firmware gọi GitHub Releases API để kiểm tra release mới nhất của:
 
-Sau khi ESP32 kết nối Wi-Fi, mở:
+`ledinhtien219/waze-mod`
 
+Release phải có asset tên `firmware.bin`.
+
+Quy trình phát hành:
+
+```bash
+git tag v1.1.0
+git push origin v1.1.0
 ```
-http://<IP-ESP32>/
-```
 
-Trang test cho phép gửi dữ liệu HUD mẫu.
+Workflow `Release Firmware` sẽ compile PlatformIO và tạo GitHub Release có `firmware.bin`. Sau đó thiết bị có thể vào web Setting > Cập nhật online > Kiểm tra cập nhật > Tải về & cập nhật.
 
-## Cấu trúc
-
-- `ESP32_WAZE_HUD.ino`: firmware chính.
-- `PROTOCOL.md`: giao thức bridge Android -> ESP32.
+Không tắt nguồn khi ESP32 đang ghi firmware.
 
 ## Android bridge
 
-Waze/Waze mod không có API công khai đơn giản để ESP32 lấy toàn bộ cảnh báo. Thiết kế dự án dùng điện thoại Android làm bridge:
+Mở thư mục `android-bridge` bằng Android Studio, build APK, nhập IP ESP32 rồi bật quyền Notification Access và Accessibility nếu muốn đọc thêm dữ liệu đang hiển thị trong Waze/Waze mod.
 
-1. NotificationListenerService lấy thông tin notification nếu có.
-2. AccessibilityService bổ sung dữ liệu đang hiển thị khi cần.
-3. Chuẩn hoá thành JSON.
-4. POST sang `/hud` trên ESP32.
-
-Bridge nên chỉ đọc dữ liệu người dùng đã chủ động cho phép và không cần can thiệp traffic mạng của Waze.
+Parser hiện tại là best-effort vì text/layout của từng Waze mod có thể khác nhau theo phiên bản và ngôn ngữ.
