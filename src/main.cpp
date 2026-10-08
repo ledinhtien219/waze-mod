@@ -734,30 +734,30 @@ void drawStaticFrame() {
   tft.fillScreen(C_BG);
 
   // Top navigation strip
-  tft.drawFastHLine(8, 38, 304, C_DARK);
+  tft.drawFastHLine(8, 34, 304, C_DARK);
 
   // Main cards
-  tft.drawRoundRect(6, 47, 84, 145, 10, C_DARK);
-  tft.drawRoundRect(96, 47, 130, 145, 10, C_BLUE2);
-  tft.drawRoundRect(232, 47, 82, 145, 10, C_DARK);
+  tft.drawRoundRect(8, 44, 72, 144, 10, C_DARK);
+  tft.drawRoundRect(88, 44, 136, 144, 10, C_BLUE2);
+  tft.drawRoundRect(232, 44, 80, 144, 10, C_DARK);
 
   // Footer
-  tft.drawFastHLine(8, 201, 304, C_DARK);
+  tft.drawFastHLine(8, 198, 304, C_DARK);
 }
 
 void drawTopPanel() {
-  tft.fillRect(0, 0, 320, 38, C_BG);
+  tft.fillRect(0, 0, 320, 34, C_BG);
 
   String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
   if (!road.length()) road = "WAZE HUD";
-  if (road.length() > 25) road = road.substring(0, 25);
+  if (road.length() > 22) road = road.substring(0, 22);
 
   // Small accent marker
-  tft.fillRoundRect(8, 8, 5, 22, 2, C_BLUE);
+  tft.fillRoundRect(8, 7, 5, 20, 2, C_BLUE);
 
   tft.setTextColor(C_WHITE, C_BG);
-  tft.setTextSize(road.length() > 18 ? 1 : 2);
-  tft.setCursor(20, road.length() > 18 ? 13 : 10);
+  tft.setTextSize(road.length() > 16 ? 1 : 2);
+  tft.setCursor(20, road.length() > 16 ? 11 : 8);
   tft.print(road);
 
   String dist = formatDistance(hud.distanceM);
@@ -766,17 +766,17 @@ void drawTopPanel() {
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(dist, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(309 - w, 10);
+  tft.setCursor(309 - w, 8);
   tft.print(dist);
 }
 
 void drawSpeedPanel() {
-  tft.fillRoundRect(7, 48, 82, 143, 9, C_BG);
-  tft.drawRoundRect(6, 47, 84, 145, 10, C_DARK);
+  tft.fillRoundRect(9, 45, 70, 142, 9, C_BG);
+  tft.drawRoundRect(8, 44, 72, 144, 10, C_DARK);
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(18, 58);
+  tft.setCursor(18, 55);
   tft.print("SPEED");
 
   String speed = String(max(0, hud.speed));
@@ -786,19 +786,19 @@ void drawSpeedPanel() {
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(speed, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(48 - w / 2, 78);
+  tft.setCursor(44 - w / 2, 82);
   tft.print(speed);
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  textCentered("km/h", 6, 126, 84, 1, C_GREY);
+  textCentered("km/h", 8, 126, 72, 1, C_GREY);
 
   if (settings.showSpeedLimit) {
     // Smaller road-sign style limit so the speed remains the visual priority.
-    int cx = 48;
-    int cy = 161;
-    tft.fillCircle(cx, cy, 22, C_RED);
-    tft.fillCircle(cx, cy, 17, C_WHITE);
+    int cx = 44;
+    int cy = 160;
+    tft.fillCircle(cx, cy, 18, C_RED);
+    tft.fillCircle(cx, cy, 14, C_WHITE);
 
     String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
     tft.setTextColor(ILI9341_BLACK, C_WHITE);
@@ -810,76 +810,76 @@ void drawSpeedPanel() {
 }
 
 void drawNavPanel() {
-  tft.fillRoundRect(97, 48, 128, 143, 9, C_BG);
-  tft.drawRoundRect(96, 47, 130, 145, 10, C_BLUE2);
+  tft.fillRoundRect(89, 45, 134, 142, 9, C_BG);
+  tft.drawRoundRect(88, 44, 136, 144, 10, C_BLUE2);
 
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(108, 58);
+  tft.setCursor(103, 55);
   tft.print("NEXT TURN");
 
   // Large maneuver glyph; centered lower so the card breathes.
-  drawArrow(hud.turn, 161, 121);
+  drawArrow(hud.turn, 156, 116);
 
   // Add a subtle baseline under the maneuver.
-  tft.drawFastHLine(116, 174, 90, C_DARK);
+  tft.drawFastHLine(112, 172, 88, C_DARK);
 }
 
 void drawAlertPanel(bool linkLost) {
-  tft.fillRoundRect(233, 48, 80, 143, 9, C_BG);
-  tft.drawRoundRect(232, 47, 82, 145, 10, linkLost ? C_RED : C_DARK);
+  tft.fillRoundRect(233, 45, 78, 142, 9, C_BG);
+  tft.drawRoundRect(232, 44, 80, 144, 10, linkLost ? C_RED : C_DARK);
 
   if (linkLost) {
-    tft.fillCircle(273, 76, 6, C_RED);
-    textCentered("LINK", 232, 93, 82, 1, C_WHITE);
-    textCentered("LOST", 232, 108, 82, 2, C_RED);
-    textCentered("WAITING", 232, 150, 82, 1, C_GREY);
+    tft.fillCircle(272, 72, 5, C_RED);
+    textCentered("LINK", 232, 90, 80, 1, C_WHITE);
+    textCentered("LOST", 232, 107, 80, 2, C_RED);
+    textCentered("WAITING", 232, 146, 80, 1, C_GREY);
     return;
   }
 
   if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
-    drawAlertGlyph(hud.alert, 273, 75);
+    drawAlertGlyph(hud.alert, 272, 72);
 
     String label = String(hlpAlertLabel(hud.alertCode));
-    if (label.length() > 12) label = label.substring(0, 12);
-    textCentered(label, 233, 105, 80, 1, C_WHITE);
+    if (label.length() > 10) label = label.substring(0, 10);
+    textCentered(label, 232, 100, 80, 1, C_WHITE);
 
     // SPEED_DROP / END_SPEED_RESTRICTION carry a speed value.
     if (hud.alertValue >= 0 && (hud.alertCode == 8 || hud.alertCode == 22)) {
       String value = String(hud.alertValue) + " KM/H";
-      textCentered(value, 233, 124, 80, 1, C_YELLOW);
-      textCentered(formatDistance(hud.alertDistanceM), 233, 143, 80, 1, C_GREY);
+      textCentered(value, 232, 120, 80, 1, C_YELLOW);
+      textCentered(formatDistance(hud.alertDistanceM), 232, 140, 80, 1, C_GREY);
     } else if (hud.alertCode == 6 && hud.alertSeverity > 0) {
       String jam = "JAM " + String(hud.alertSeverity) + "/5";
-      textCentered(jam, 233, 125, 80, 1, C_YELLOW);
+      textCentered(jam, 232, 120, 80, 1, C_YELLOW);
       if (hud.alertDelayMin >= 0) {
-        textCentered("+" + String(hud.alertDelayMin) + " MIN", 233, 144, 80, 1, C_WHITE);
+        textCentered("+" + String(hud.alertDelayMin) + " MIN", 232, 140, 80, 1, C_WHITE);
       } else {
-        textCentered(formatDistance(hud.alertDistanceM), 233, 144, 80, 1, C_GREY);
+        textCentered(formatDistance(hud.alertDistanceM), 232, 140, 80, 1, C_GREY);
       }
     } else {
-      textCentered(formatDistance(hud.alertDistanceM), 233, 132, 80, 2, C_YELLOW);
+      textCentered(formatDistance(hud.alertDistanceM), 232, 128, 80, 2, C_YELLOW);
     }
   } else {
-    tft.fillCircle(273, 74, 6, C_GREEN);
-    textCentered("ONLINE", 232, 92, 82, 1, C_GREEN);
-    textCentered("NO ALERT", 232, 132, 82, 1, C_GREY);
+    tft.fillCircle(272, 72, 5, C_GREEN);
+    textCentered("ONLINE", 232, 92, 80, 1, C_GREEN);
+    textCentered("NO ALERT", 232, 130, 80, 1, C_GREY);
   }
 }
 
 void drawFooterPanel() {
-  tft.fillRect(0, 202, 320, 38, C_BG);
-  tft.drawFastHLine(8, 201, 304, C_DARK);
+  tft.fillRect(0, 199, 320, 41, C_BG);
+  tft.drawFastHLine(8, 198, 304, C_DARK);
 
   // LEFT
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(10, 209);
+  tft.setCursor(10, 206);
   tft.print("LEFT");
 
   tft.setTextColor(C_WHITE, C_BG);
   tft.setTextSize(2);
-  tft.setCursor(10, 222);
+  tft.setCursor(10, 219);
   tft.print(String(hud.remainingKm, 1));
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
@@ -888,12 +888,12 @@ void drawFooterPanel() {
   // ETA
   tft.setTextSize(1);
   tft.setTextColor(C_GREY, C_BG);
-  tft.setCursor(122, 209);
+  tft.setCursor(130, 206);
   tft.print("ETA");
 
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(2);
-  tft.setCursor(122, 222);
+  tft.setCursor(120, 219);
   tft.print(settings.showEta ? hud.eta : "--:--");
 
   // ROUTE
@@ -902,7 +902,7 @@ void drawFooterPanel() {
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(246, 209);
+  tft.setCursor(248, 206);
   tft.print("ROUTE");
 
   if (route.length()) {
@@ -911,12 +911,12 @@ void drawFooterPanel() {
     int16_t x1, y1;
     uint16_t w, h;
     tft.getTextBounds(route, 0, 0, &x1, &y1, &w, &h);
-    tft.setCursor(310 - w, route.length() > 5 ? 225 : 222);
+    tft.setCursor(308 - w, route.length() > 5 ? 221 : 218);
     tft.print(route);
   } else {
     tft.setTextColor(C_GREY, C_BG);
     tft.setTextSize(1);
-    tft.setCursor(281, 225);
+    tft.setCursor(294, 218);
     tft.print("--");
   }
 }
