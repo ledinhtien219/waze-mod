@@ -305,3 +305,13 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Header hiển thị tên đường đã bỏ dấu Unicode an toàn và IP Wi-Fi/AP hiện tại.
 - IP trên màn chính tự đổi sau khi DHCP cấp địa chỉ mới.
 - Giữ hệ thống alert HLP và icon cảnh báo chuyên biệt của v1.3.5.
+
+
+## Firmware v1.3.7 — Wi-Fi reconnect fix
+
+- Loại bỏ việc gọi lại `WiFi.begin()` khi STA vẫn đang kết nối; đây là nguyên nhân log `sta is connecting, cannot set config`.
+- Chỉ nạp SSID/password một lần lúc boot.
+- Fallback AP `WAZE-HUD` không ghi đè station config.
+- Background retry dùng `WiFi.reconnect()` mỗi 15 giây.
+- Tắt Arduino auto-reconnect để tránh hai cơ chế reconnect chạy chồng nhau.
+- Serial log thêm Wi-Fi disconnect reason và `/state` có `wifi_disconnect_reason`.

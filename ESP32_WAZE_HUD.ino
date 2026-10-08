@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.6";
+static const char *FW_VERSION = "1.3.7";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -46,6 +46,7 @@ String shownIp = "";
 volatile bool wifiUiDirty = false;
 uint32_t lastWifiRetry = 0;
 wl_status_t lastWifiStatus = WL_IDLE_STATUS;
+volatile uint8_t lastWifiDisconnectReason = 0;
 bool apMode = false;
 bool bleConnected = false;
 bool bleHlpReady = false;
@@ -1733,6 +1734,7 @@ void setupServer() {
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
     d["wifi"]=WiFi.status()==WL_CONNECTED; d["wifi_status"]=(int)WiFi.status(); d["ssid"]=wifiSSID;
+    d["wifi_disconnect_reason"]=(int)lastWifiDisconnectReason;
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
@@ -1746,12 +1748,11 @@ void setupServer() {
 }
 
 void startSetupAP() {
+  // Switching to AP+STA keeps the station configuration loaded by the single
+  // WiFi.begin() call. Never call WiFi.begin() again while STA is connecting.
   WiFi.mode(WIFI_AP_STA);
-  if (!WiFi.softAPgetStationNum() && WiFi.softAPIP() == IPAddress(0, 0, 0, 0)) {
-    WiFi.softAP(AP_NAME, AP_PASS);
-  } else {
-    WiFi.softAP(AP_NAME, AP_PASS);
-  }
+  WiFi.softAP(AP_NAME, AP_PASS);
+
   apMode = true;
   shownIp = WiFi.softAPIP().toString();
   wifiUiDirty = true;
@@ -1765,7 +1766,10 @@ void connectWiFi() {
 
   WiFi.persistent(false);
   WiFi.setSleep(false);
-  WiFi.setAutoReconnect(true);
+
+  // Use one reconnect owner only. Arduino auto reconnect + our retry loop can
+  // overlap and cause "sta is connecting, cannot set config".
+  WiFi.setAutoReconnect(false);
 
   if (!wifiSSID.length()) {
     startSetupAP();
@@ -1774,11 +1778,17 @@ void connectWiFi() {
   }
 
   WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
-  drawWaiting();
+
+  // Abort any stale station attempt left by a previous boot/state before
+  // applying credentials once.
+  WiFi.disconnect(false, false);
+  delay(150);
 
   Serial.print("Wi-Fi: connecting to ");
   Serial.println(wifiSSID);
+
+  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+  drawWaiting();
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
@@ -1789,19 +1799,21 @@ void connectWiFi() {
     apMode = false;
     shownIp = WiFi.localIP().toString();
     wifiUiDirty = true;
+
     Serial.print("Wi-Fi connected, IP: ");
     Serial.println(WiFi.localIP());
     return;
   }
 
-  // Keep STA active and add an AP fallback. Background retry in loop() will
-  // continue trying the saved SSID without requiring a reboot.
+  // Do NOT call WiFi.begin() here. The STA config is already loaded.
+  // Add an AP for settings while preserving the saved station config.
   startSetupAP();
-  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
   lastWifiRetry = millis();
 
   Serial.print("Wi-Fi timeout, fallback AP started. status=");
-  Serial.println((int)WiFi.status());
+  Serial.print((int)WiFi.status());
+  Serial.print(", last reason=");
+  Serial.println((int)lastWifiDisconnectReason);
 }
 
 void maintainWiFi() {
@@ -1815,6 +1827,9 @@ void maintainWiFi() {
 
   if (status == WL_CONNECTED) {
     if (apMode) {
+      // Keep AP alive only until the STA succeeds. This avoids routing
+      // confusion while still allowing setup during failures.
+      WiFi.softAPdisconnect(true);
       apMode = false;
       wifiUiDirty = true;
     }
@@ -1834,20 +1849,39 @@ void maintainWiFi() {
     return;
   }
 
-  // Retry saved Wi-Fi in the background while the setup AP remains available.
   if (!apMode) startSetupAP();
 
-  if (millis() - lastWifiRetry >= 10000) {
+  // Reconnect reuses the already-loaded STA config and does not call
+  // esp_wifi_set_config(), so it cannot trigger the previous
+  // "sta is connecting, cannot set config" loop.
+  if (millis() - lastWifiRetry >= 15000) {
     lastWifiRetry = millis();
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
-    Serial.print("Wi-Fi retry: ");
-    Serial.println(wifiSSID);
+
+    bool started = WiFi.reconnect();
+    Serial.print("Wi-Fi reconnect ");
+    Serial.print(started ? "started: " : "request failed: ");
+    Serial.print(wifiSSID);
+    Serial.print(", status=");
+    Serial.print((int)WiFi.status());
+    Serial.print(", reason=");
+    Serial.println((int)lastWifiDisconnectReason);
   }
 }
 
 void setup() {
   Serial.begin(115200);
+
+  WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
+    if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      lastWifiDisconnectReason = 0;
+      Serial.print("Wi-Fi event GOT_IP: ");
+      Serial.println(WiFi.localIP());
+    } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
+      Serial.print("Wi-Fi disconnected, reason=");
+      Serial.println((int)lastWifiDisconnectReason);
+    }
+  });
 
   displaySPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI, TFT_CS);
   // ILI9341 normally handles 40 MHz SPI on ESP32; this halves large-region
