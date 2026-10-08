@@ -74,7 +74,6 @@ void loadAppSettings() {
   prefs.end();
 }
 
-bool alertEnabled(AlertType a);
 
 enum TurnType {
   TURN_STRAIGHT,
