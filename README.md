@@ -259,3 +259,12 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - HLP state giống hệt nhau được WazeMod gửi mỗi giây sẽ không làm màn hình redraw.
 - Trạng thái LINK LOST chỉ redraw khi thực sự chuyển trạng thái.
 - Wi-Fi connect timeout khởi động giảm còn 6 giây; BLE chỉ advertise sau khi bước Wi-Fi setup hoàn tất để tránh nhận kết nối khi main loop chưa chạy.
+
+
+## Firmware v1.2.3 — BLE discovery diagnostics
+
+- HLP service UUID được đặt trực tiếp trong BLE advertising packet để WazeMod picker lọc chắc chắn.
+- Tên `WazeHUD` nằm trong scan response.
+- Serial Monitor in BLE address thực tế của ESP32.
+- Web `/state` trả thêm `ble_name` và `ble_address`.
+- Khi dùng WazeMod built-in HUD Link, hãy chọn transport **BLE GATT** và chọn lại thiết bị sau khi flash; bản ghi Classic cũ không tự đổi transport chỉ vì chọn "Tự động".

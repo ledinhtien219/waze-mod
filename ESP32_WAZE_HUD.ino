@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.2.2";
+static const char *FW_VERSION = "1.2.3";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -48,6 +48,7 @@ bool bleHlpReady = false;
 String bleRxBuffer;
 BLECharacteristic *bleNotifyCharacteristic = nullptr;
 uint32_t lastBleDevNotify = 0;
+String bleLocalAddress = "";
 
 struct BleRxChunk {
   uint16_t length;
@@ -796,14 +797,26 @@ void setupBLE() {
 
   service->start();
 
+  bleLocalAddress = String(BLEDevice::getAddress().toString().c_str());
+
+  // Build the ADV payload explicitly so WazeMod's BLE picker can filter on the
+  // HLP service UUID without depending on automatic payload packing.
+  BLEAdvertisementData advData;
+  advData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+  advData.setCompleteServices(BLEUUID(BLE_SERVICE_UUID));
+
+  // Keep the name in scan response; ADV remains small and always contains the
+  // full 128-bit HLP UUID used by WazeMod's BLE filter.
+  BLEAdvertisementData scanData;
+  scanData.setName(BLE_DEVICE_NAME);
+
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(BLE_SERVICE_UUID);
-  advertising->setScanResponse(true);
-  advertising->setMinPreferred(0x06);
-  advertising->setMinPreferred(0x12);
+  advertising->setAdvertisementData(advData);
+  advertising->setScanResponseData(scanData);
   advertising->start();
 
-  Serial.println("BLE HLP/1 advertising as WazeHUD");
+  Serial.print("BLE HLP/1 advertising as WazeHUD, address: ");
+  Serial.println(bleLocalAddress);
 }
 
 bool checkForUpdate() {
@@ -943,7 +956,7 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 <div class="status">Trạng thái: <span class="%WIFICLASS%">%WIFISTATUS%</span><br>IP: %IP%</div></div>
 
 <div class="card"><h2>Kết nối điện thoại / WAZE mod</h2>
-<div class="status">Android Bridge gửi dữ liệu tới <b>http://%IP%/hud</b><br>Dữ liệu HUD: %HUDSTATUS%</div>
+<div class="status"><b>BLE HLP/1:</b> WazeHUD · <span>%BLEADDR%</span><br><b>Service:</b> 8a7e0001-4d6e-4c48-9a9d-484c504c0001<br>Dữ liệu HUD: %HUDSTATUS%</div>
 <button class="secondary" onclick="sendTest()">Gửi dữ liệu HUD mẫu</button><div id="testmsg" class="sub"></div></div>
 
 <div class="card"><h2>Cập nhật online</h2>
@@ -973,6 +986,7 @@ async function saveAuto(){await fetch("/update-auto?enabled="+(document.getEleme
   html.replace("%UPDATEMSG%", updateMessage);
   html.replace("%UPTIME%", String(millis()/1000));
   html.replace("%HUDSTATUS%", hud.valid ? "Đã nhận dữ liệu" : "Đang chờ điện thoại");
+  html.replace("%BLEADDR%", bleLocalAddress.length() ? bleLocalAddress : "--");
   html.replace("%WIFISTATUS%", WiFi.status()==WL_CONNECTED ? "Đã kết nối" : (apMode ? "AP cài đặt" : "Mất kết nối"));
   html.replace("%WIFICLASS%", WiFi.status()==WL_CONNECTED ? "ok" : "warn");
   html.replace("%MIRROR%", checked(settings.mirrorHud));
@@ -1070,6 +1084,7 @@ void setupServer() {
   server.on("/state", HTTP_GET, []() {
     JsonDocument d;
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
+    d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
     d["wifi"]=WiFi.status()==WL_CONNECTED; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
