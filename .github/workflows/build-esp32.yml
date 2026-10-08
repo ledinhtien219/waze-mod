@@ -6,6 +6,7 @@ on:
       - "ESP32_WAZE_HUD.ino"
       - "src/**"
       - "platformio.ini"
+      - "partitions.csv"
       - ".github/workflows/build-esp32.yml"
   workflow_dispatch:
 

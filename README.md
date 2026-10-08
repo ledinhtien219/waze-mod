@@ -40,6 +40,8 @@ Logic 3.3V.
 - Adafruit ILI9341
 - ArduinoJson 7.x
 
+Firmware BLE lớn hơn giới hạn app mặc định của ESP32. Repo có sẵn `partitions.csv` với 2 OTA slot ~1.9 MB. Khi dùng Arduino IDE, hãy giữ `partitions.csv` cùng thư mục với `ESP32_WAZE_HUD.ino` để build và OTA đúng phân vùng.
+
 ## Sử dụng
 
 ### Kết nối BLE
