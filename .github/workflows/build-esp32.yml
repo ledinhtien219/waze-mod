@@ -4,6 +4,7 @@ on:
   push:
     paths:
       - "ESP32_WAZE_HUD.ino"
+      - "src/**"
       - "platformio.ini"
       - ".github/workflows/build-esp32.yml"
   workflow_dispatch:
