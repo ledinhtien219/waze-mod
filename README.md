@@ -249,3 +249,13 @@ Firmware v1.2.1 dùng đúng transport BLE HLP/1 của WazeMod:
 - Capabilities: `8a7e0004-4d6e-4c48-9a9d-484c504c0001`
 
 Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` dạng BLE. Không chọn Bluetooth Classic cho firmware BLE này.
+
+
+## Firmware v1.2.2 — ổn định BLE và chống nháy TFT
+
+- BLE GATT callback chỉ copy ATT chunk vào FreeRTOS queue; parse HLP/1 và render chạy ngoài callback.
+- Frame được ghép theo LF và giới hạn 512 byte.
+- TFT dùng dirty-region rendering: không còn `fillScreen()` mỗi state/heartbeat.
+- HLP state giống hệt nhau được WazeMod gửi mỗi giây sẽ không làm màn hình redraw.
+- Trạng thái LINK LOST chỉ redraw khi thực sự chuyển trạng thái.
+- Wi-Fi connect timeout khởi động giảm còn 6 giây; BLE chỉ advertise sau khi bước Wi-Fi setup hoàn tất để tránh nhận kết nối khi main loop chưa chạy.

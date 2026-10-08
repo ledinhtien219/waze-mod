@@ -13,6 +13,8 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====
 #define TFT_CS   27
@@ -30,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.2.1";
+static const char *FW_VERSION = "1.2.2";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -46,6 +48,14 @@ bool bleHlpReady = false;
 String bleRxBuffer;
 BLECharacteristic *bleNotifyCharacteristic = nullptr;
 uint32_t lastBleDevNotify = 0;
+
+struct BleRxChunk {
+  uint16_t length;
+  uint8_t bytes[256];
+};
+
+QueueHandle_t bleRxQueue = nullptr;
+volatile uint32_t bleRxDropped = 0;
 
 struct AppSettings {
   bool mirrorHud = false;
@@ -125,6 +135,9 @@ bool alertEnabled(AlertType a);
 const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
 void drawArrow(TurnType turn, int cx, int cy);
+void drawHud();
+void drawWaiting();
+void processBleInput();
 
 struct HudState {
   TurnType turn = TURN_STRAIGHT;
@@ -140,6 +153,11 @@ struct HudState {
   uint32_t updatedAt = 0;
   bool valid = false;
 } hud;
+
+HudState renderedHud;
+AppSettings renderedSettings;
+bool hudRenderValid = false;
+bool renderedLinkLost = false;
 
 const uint16_t C_BG      = ILI9341_BLACK;
 const uint16_t C_WHITE   = ILI9341_WHITE;
@@ -479,44 +497,54 @@ void drawStaticFrame() {
   tft.drawRoundRect(2, 202, 316, 36, 8, C_BLUE2);
 }
 
-void drawHud() {
-  drawStaticFrame();
+void drawLeftPanel() {
+  // Clear only this panel. Keeping the vertical divider intact avoids a full-screen flash.
+  tft.fillRect(0, 0, 68, 200, C_BG);
 
-  // Left: speed
   tft.setTextColor(C_WHITE, C_BG);
   tft.setTextSize(5);
   String speed = String(max(0, hud.speed));
-  int16_t x1,y1; uint16_t w,h;
-  tft.getTextBounds(speed,0,0,&x1,&y1,&w,&h);
-  tft.setCursor(34 - w/2, 7);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(speed, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor(34 - w / 2, 7);
   tft.print(speed);
 
   tft.setTextSize(1);
   tft.setCursor(19, 48);
   tft.print("km/h");
 
-  if (settings.showSpeedLimit) drawSpeedLimit(34, 90, hud.speedLimit);
+  if (settings.showSpeedLimit) {
+    drawSpeedLimit(34, 90, hud.speedLimit);
+  }
 
   if (hud.alert == ALERT_CAMERA && settings.alertCamera) {
     drawCameraGlyph(34, 137, C_WHITE);
     textCentered(formatDistance(hud.alertDistanceM), 0, 151, 68, 1, C_WHITE);
   }
+}
 
-  // Center: maneuver
+void drawCenterPanel() {
+  tft.fillRect(69, 0, 153, 200, C_BG);
+
   textCentered(formatDistance(hud.distanceM), 69, 5, 153, 3, C_YELLOW);
   drawArrow(hud.turn, 145, 88);
 
   String road = settings.showRoad ? cleanText(hud.road) : "";
-  if (road.length() > 21) road = road.substring(0,21);
+  if (road.length() > 21) road = road.substring(0, 21);
   textCentered(road, 72, 165, 148, road.length() > 16 ? 1 : 2, C_WHITE);
+}
 
-  // Right: nearest alert
+void drawRightPanel(bool linkLost) {
+  tft.fillRect(223, 0, 97, 200, C_BG);
+
   if (hud.alert != ALERT_NONE && alertEnabled(hud.alert)) {
     drawAlertGlyph(hud.alert, 246, 34);
     tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_BG);
     tft.setCursor(270, 18);
     tft.print(alertLabel(hud.alert));
+
     tft.setTextColor(C_BLUE, C_BG);
     tft.setTextSize(2);
     tft.setCursor(267, 41);
@@ -530,23 +558,31 @@ void drawHud() {
     textCentered("NO ALERT", 224, 35, 94, 1, C_GREY);
   }
 
-  // Additional status blocks
   tft.drawRoundRect(229, 73, 84, 37, 5, C_DARK);
   textCentered("NAV ACTIVE", 230, 82, 82, 1, C_GREEN);
 
   tft.drawRoundRect(229, 117, 84, 64, 5, C_DARK);
   textCentered("NEXT", 230, 124, 82, 1, C_GREY);
-  String next = formatDistance(hud.distanceM);
-  textCentered(next, 230, 143, 82, 2, C_BLUE);
+  textCentered(formatDistance(hud.distanceM), 230, 143, 82, 2, C_BLUE);
 
-  // Footer
+  if (linkLost) {
+    tft.fillRect(229, 184, 84, 14, C_RED);
+    textCentered("LINK LOST", 229, 187, 84, 1, C_WHITE);
+  }
+}
+
+void drawFooterPanel() {
+  // Clear the inside only; preserve the blue rounded border.
+  tft.fillRect(3, 203, 314, 34, C_BG);
+
   tft.setTextColor(C_WHITE, C_BG);
   tft.setTextSize(1);
   tft.setCursor(12, 216);
   tft.print("LEFT ");
+
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(2);
-  tft.print(String(hud.remainingKm,1));
+  tft.print(String(hud.remainingKm, 1));
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
@@ -556,27 +592,88 @@ void drawHud() {
   tft.setTextColor(C_WHITE, C_BG);
   tft.setCursor(124, 216);
   tft.print("ETA ");
+
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(2);
   tft.print(settings.showEta ? hud.eta : "--:--");
 
   String route = settings.showRoute ? cleanText(hud.route) : "";
-  if (route.length() > 7) route = route.substring(0,7);
+  if (route.length() > 7) route = route.substring(0, 7);
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(2);
-  int16_t rx,ry; uint16_t rw,rh;
-  tft.getTextBounds(route,0,0,&rx,&ry,&rw,&rh);
-  tft.setCursor(307-rw,216);
-  tft.print(route);
 
-  // Link state
-  if (hud.valid && millis() - hud.updatedAt > HUD_TIMEOUT_MS) {
-    tft.fillRect(229, 184, 84, 14, C_RED);
-    textCentered("LINK LOST", 229, 187, 84, 1, C_WHITE);
-  }
+  int16_t rx, ry;
+  uint16_t rw, rh;
+  tft.getTextBounds(route, 0, 0, &rx, &ry, &rw, &rh);
+  tft.setCursor(307 - rw, 216);
+  tft.print(route);
 }
 
+void drawHud() {
+  if (!hud.valid) return;
+
+  bool linkLost = millis() - hud.updatedAt > HUD_TIMEOUT_MS;
+  bool first = !hudRenderValid;
+
+  bool leftDirty =
+    first ||
+    hud.speed != renderedHud.speed ||
+    hud.speedLimit != renderedHud.speedLimit ||
+    hud.alert != renderedHud.alert ||
+    hud.alertDistanceM != renderedHud.alertDistanceM ||
+    settings.showSpeedLimit != renderedSettings.showSpeedLimit ||
+    settings.alertCamera != renderedSettings.alertCamera;
+
+  bool centerDirty =
+    first ||
+    hud.turn != renderedHud.turn ||
+    hud.distanceM != renderedHud.distanceM ||
+    hud.road != renderedHud.road ||
+    settings.showRoad != renderedSettings.showRoad;
+
+  bool alertSettingChanged =
+    settings.alertPolice != renderedSettings.alertPolice ||
+    settings.alertCamera != renderedSettings.alertCamera ||
+    settings.alertCrash != renderedSettings.alertCrash ||
+    settings.alertTraffic != renderedSettings.alertTraffic ||
+    settings.alertRoadworks != renderedSettings.alertRoadworks ||
+    settings.alertHazard != renderedSettings.alertHazard;
+
+  bool rightDirty =
+    first ||
+    hud.alert != renderedHud.alert ||
+    hud.alertDistanceM != renderedHud.alertDistanceM ||
+    hud.distanceM != renderedHud.distanceM ||
+    alertSettingChanged ||
+    linkLost != renderedLinkLost;
+
+  bool footerDirty =
+    first ||
+    fabsf(hud.remainingKm - renderedHud.remainingKm) > 0.01f ||
+    hud.eta != renderedHud.eta ||
+    hud.route != renderedHud.route ||
+    settings.showEta != renderedSettings.showEta ||
+    settings.showRoute != renderedSettings.showRoute;
+
+  if (!leftDirty && !centerDirty && !rightDirty && !footerDirty) {
+    return;
+  }
+
+  if (first) {
+    drawStaticFrame();
+  }
+  if (leftDirty) drawLeftPanel();
+  if (centerDirty) drawCenterPanel();
+  if (rightDirty) drawRightPanel(linkLost);
+  if (footerDirty) drawFooterPanel();
+
+  renderedHud = hud;
+  renderedSettings = settings;
+  renderedLinkLost = linkLost;
+  hudRenderValid = true;
+}
 void drawWaiting() {
+  hudRenderValid = false;
   tft.fillScreen(C_BG);
   textCentered("WAZE HUD", 0, 36, 320, 4, C_BLUE);
   textCentered(bleConnected ? "BLE CONNECTED" : "BLE: WazeHUD", 0, 100, 320, 2, bleConnected ? C_GREEN : C_WHITE);
@@ -590,6 +687,7 @@ class HudBleServerCallbacks : public BLEServerCallbacks {
     bleConnected = true;
     bleHlpReady = false;
     bleRxBuffer = "";
+    if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
     lastBleDevNotify = 0;
     if (!hud.valid) drawWaiting();
     Serial.println("BLE HLP client connected");
@@ -599,6 +697,7 @@ class HudBleServerCallbacks : public BLEServerCallbacks {
     bleConnected = false;
     bleHlpReady = false;
     bleRxBuffer = "";
+    if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
     if (!hud.valid) drawWaiting();
     BLEDevice::getAdvertising()->start();
     Serial.println("BLE HLP client disconnected; advertising restarted");
@@ -607,38 +706,66 @@ class HudBleServerCallbacks : public BLEServerCallbacks {
 
 class HudBleTxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
+    // HLP/1 requires the GATT callback to return quickly. Copy the ATT chunk
+    // into a bounded FreeRTOS queue; framing, JSON parsing and TFT rendering
+    // happen later from loop().
     std::string raw = characteristic->getValue();
+    if (raw.empty() || raw.size() > sizeof(BleRxChunk::bytes) || bleRxQueue == nullptr) {
+      bleRxDropped++;
+      return;
+    }
 
-    for (size_t i = 0; i < raw.size(); i++) {
-      char c = raw[i];
+    BleRxChunk chunk;
+    chunk.length = (uint16_t)raw.size();
+    memcpy(chunk.bytes, raw.data(), chunk.length);
 
-      if (c == '\n') {
-        String payload = bleRxBuffer;
-        bleRxBuffer = "";
-        payload.trim();
-
-        if (payload.length()) {
-          Serial.print("HLP RX: ");
-          Serial.println(payload);
-
-          bool handled = applyHudPayload(payload);
-          if (handled && payload.indexOf("\"t\":\"s\"") >= 0) {
-            drawHud();
-          }
-        }
-      } else if (c != '\r') {
-        // HLP/1 frames are bounded; drop an overlong/malformed frame safely.
-        if (bleRxBuffer.length() < 768) {
-          bleRxBuffer += c;
-        } else {
-          bleRxBuffer = "";
-        }
-      }
+    if (xQueueSend(bleRxQueue, &chunk, 0) != pdTRUE) {
+      bleRxDropped++;
     }
   }
 };
 
+void processBleLine(String payload) {
+  payload.trim();
+  if (!payload.length()) return;
+
+  // applyHudPayload replies to ping before any TFT rendering.
+  if (applyHudPayload(payload) && hud.valid) {
+    drawHud();
+  }
+}
+
+void processBleInput() {
+  if (bleRxQueue == nullptr) return;
+
+  BleRxChunk chunk;
+  while (xQueueReceive(bleRxQueue, &chunk, 0) == pdTRUE) {
+    for (uint16_t i = 0; i < chunk.length; i++) {
+      char c = (char)chunk.bytes[i];
+
+      if (c == '\n') {
+        String payload = bleRxBuffer;
+        bleRxBuffer = "";
+        processBleLine(payload);
+      } else if (c != '\r') {
+        // HLP/1 frames are limited to 512 bytes.
+        if (bleRxBuffer.length() < 512) {
+          bleRxBuffer += c;
+        } else {
+          bleRxBuffer = "";
+          bleRxDropped++;
+        }
+      }
+    }
+  }
+}
+
 void setupBLE() {
+  bleRxQueue = xQueueCreate(16, sizeof(BleRxChunk));
+  if (bleRxQueue == nullptr) {
+    Serial.println("ERROR: cannot create BLE RX queue");
+  }
+
   BLEDevice::init(BLE_DEVICE_NAME);
 
   BLEServer *bleServer = BLEDevice::createServer();
@@ -962,7 +1089,7 @@ void connectWiFi() {
     WiFi.setSleep(false);
     WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
     uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 12000) delay(150);
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 6000) delay(150);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -985,8 +1112,8 @@ void setup() {
   tft.fillScreen(C_BG);
 
   loadAppSettings();
-  setupBLE();
   connectWiFi();
+  setupBLE();
   setupServer();
   drawWaiting();
   if (settings.autoUpdateCheck && WiFi.status() == WL_CONNECTED) {
@@ -998,9 +1125,11 @@ void setup() {
 }
 
 void loop() {
+  // Drain GATT bytes outside the Bluetooth callback. This prevents TFT/JSON work
+  // from blocking acknowledged BLE writes.
+  processBleInput();
+
   // Send HLP device declaration repeatedly until WazeMod answers with "hi".
-  // Notifications sent before CCCD subscription are harmless; a later retry
-  // reaches Android as soon as RX notifications are enabled.
   if (bleConnected && !bleHlpReady && millis() - lastBleDevNotify >= 350) {
     lastBleDevNotify = millis();
     sendHlpDev();
@@ -1008,10 +1137,13 @@ void loop() {
 
   server.handleClient();
 
-  static uint32_t lastRefresh = 0;
-  if (millis() - lastRefresh > 1000) {
-    lastRefresh = millis();
+  // Only checks the LINK LOST transition. drawHud() itself is dirty-region based,
+  // so identical 1 Hz HLP heartbeats do not redraw the display.
+  static uint32_t lastStatusCheck = 0;
+  if (millis() - lastStatusCheck >= 250) {
+    lastStatusCheck = millis();
     if (hud.valid) drawHud();
   }
-  delay(4);
+
+  delay(2);
 }
