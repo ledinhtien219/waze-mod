@@ -40,6 +40,28 @@ Logic 3.3V.
 - Adafruit ILI9341
 - ArduinoJson 7.x
 
+### Bắt buộc khi build bằng Arduino IDE
+
+Firmware BLE v1.2.x lớn hơn partition mặc định 1.31 MB của ESP32. Trong Arduino IDE chọn:
+
+- **Board:** ESP32 Dev Module
+- **Flash Size:** 4MB (32Mb)
+- **Partition Scheme:** **Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)**  
+  (một số bản ESP32 core mới có thể ghi **130KB SPIFFS** thay vì 190KB)
+- Lần nạp đầu sau khi đổi partition: có thể bật **Erase All Flash Before Sketch Upload**
+
+Sau khi chọn đúng, lúc Verify dòng dung lượng phải báo gần:
+
+`Maximum is 1966080 bytes`
+
+Nếu vẫn hiện:
+
+`Maximum is 1310720 bytes`
+
+thì Arduino IDE vẫn đang dùng partition mặc định.
+
+Repo cũng có sẵn `partitions.csv`. Nếu dùng custom partition tự động, file này phải nằm **cùng thư mục sketch** với `ESP32_WAZE_HUD.ino` và đúng tên `partitions.csv` (không phải `partitions.csv.txt`).
+
 Firmware BLE lớn hơn giới hạn app mặc định của ESP32. Repo có sẵn `partitions.csv` với 2 OTA slot ~1.9 MB. Khi dùng Arduino IDE, hãy giữ `partitions.csv` cùng thư mục với `ESP32_WAZE_HUD.ino` để build và OTA đúng phân vùng.
 
 ## Sử dụng
