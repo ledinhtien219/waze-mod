@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.2";
+static const char *FW_VERSION = "1.3.3";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -44,6 +44,8 @@ String wifiSSID;
 String wifiPASS;
 String shownIp = "";
 volatile bool wifiUiDirty = false;
+uint32_t lastWifiRetry = 0;
+wl_status_t lastWifiStatus = WL_IDLE_STATUS;
 bool apMode = false;
 bool bleConnected = false;
 bool bleHlpReady = false;
@@ -1273,7 +1275,7 @@ bool installOnlineUpdate() {
 String checked(bool v) { return v ? "checked" : ""; }
 
 String pageHtml() {
-  String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+  String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
   String html = R"HTML(
 <!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Waze HUD Settings</title>
@@ -1447,7 +1449,8 @@ void setupServer() {
     JsonDocument d;
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
-    d["wifi"]=WiFi.status()==WL_CONNECTED; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
+    d["wifi"]=WiFi.status()==WL_CONNECTED; d["wifi_status"]=(int)WiFi.status(); d["ssid"]=wifiSSID;
+    d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
@@ -1457,38 +1460,105 @@ void setupServer() {
   server.begin();
 }
 
+void startSetupAP() {
+  WiFi.mode(WIFI_AP_STA);
+  if (!WiFi.softAPgetStationNum() && WiFi.softAPIP() == IPAddress(0, 0, 0, 0)) {
+    WiFi.softAP(AP_NAME, AP_PASS);
+  } else {
+    WiFi.softAP(AP_NAME, AP_PASS);
+  }
+  apMode = true;
+  shownIp = WiFi.softAPIP().toString();
+  wifiUiDirty = true;
+}
+
 void connectWiFi() {
   prefs.begin("wazehud", true);
   wifiSSID = prefs.getString("ssid", "");
   wifiPASS = prefs.getString("pass", "");
   prefs.end();
 
-  if (wifiSSID.length()) {
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
 
-    // Show Wi-Fi startup immediately instead of leaving a blank/static screen.
-    drawWaiting();
+  if (!wifiSSID.length()) {
+    startSetupAP();
+    Serial.println("Wi-Fi: no saved SSID, setup AP started");
+    return;
+  }
 
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
-      delay(100);
-    }
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+  drawWaiting();
+
+  Serial.print("Wi-Fi: connecting to ");
+  Serial.println(wifiSSID);
+
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
+    delay(150);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     apMode = false;
     shownIp = WiFi.localIP().toString();
     wifiUiDirty = true;
+    Serial.print("Wi-Fi connected, IP: ");
+    Serial.println(WiFi.localIP());
     return;
   }
 
-  apMode = true;
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(AP_NAME, AP_PASS);
-  shownIp = WiFi.softAPIP().toString();
-  wifiUiDirty = true;
+  // Keep STA active and add an AP fallback. Background retry in loop() will
+  // continue trying the saved SSID without requiring a reboot.
+  startSetupAP();
+  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+  lastWifiRetry = millis();
+
+  Serial.print("Wi-Fi timeout, fallback AP started. status=");
+  Serial.println((int)WiFi.status());
+}
+
+void maintainWiFi() {
+  wl_status_t status = WiFi.status();
+
+  if (status != lastWifiStatus) {
+    lastWifiStatus = status;
+    Serial.print("Wi-Fi status: ");
+    Serial.println((int)status);
+  }
+
+  if (status == WL_CONNECTED) {
+    if (apMode) {
+      apMode = false;
+      wifiUiDirty = true;
+    }
+
+    String ip = WiFi.localIP().toString();
+    if (ip != shownIp) {
+      shownIp = ip;
+      wifiUiDirty = true;
+      Serial.print("Wi-Fi IP: ");
+      Serial.println(ip);
+    }
+    return;
+  }
+
+  if (!wifiSSID.length()) {
+    if (!apMode) startSetupAP();
+    return;
+  }
+
+  // Retry saved Wi-Fi in the background while the setup AP remains available.
+  if (!apMode) startSetupAP();
+
+  if (millis() - lastWifiRetry >= 10000) {
+    lastWifiRetry = millis();
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+    Serial.print("Wi-Fi retry: ");
+    Serial.println(wifiSSID);
+  }
 }
 
 void setup() {
@@ -1513,7 +1583,7 @@ void setup() {
   }
 
   Serial.print("Waze HUD IP: ");
-  Serial.println(apMode ? WiFi.softAPIP() : WiFi.localIP());
+  Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
 }
 
 void loop() {
@@ -1528,10 +1598,11 @@ void loop() {
   }
 
   server.handleClient();
+  maintainWiFi();
 
   // Reflect a new DHCP/AP address on the boot/waiting screen.
-  String currentIp = apMode ? WiFi.softAPIP().toString() :
-                     (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "connecting...");
+  String currentIp = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() :
+                     (apMode ? WiFi.softAPIP().toString() : "connecting...");
   if (currentIp != shownIp) {
     shownIp = currentIp;
     wifiUiDirty = true;
