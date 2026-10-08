@@ -268,3 +268,9 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Serial Monitor in BLE address thực tế của ESP32.
 - Web `/state` trả thêm `ble_name` và `ble_address`.
 - Khi dùng WazeMod built-in HUD Link, hãy chọn transport **BLE GATT** và chọn lại thiết bị sau khi flash; bản ghi Classic cũ không tự đổi transport chỉ vì chọn "Tự động".
+
+
+## Firmware v1.2.4 — Arduino IDE compatibility
+
+- Thêm prototype thủ công cho `parseHlpTurn(JsonDocument &doc)` để tránh lỗi auto-prototype của Arduino IDE: `TurnType does not name a type`.
+- Chuẩn hoá `BLECharacteristic::getValue()` qua `.c_str()` sang Arduino `String`, tương thích cả ESP32 core trả `std::string` lẫn core mới trả `String`.

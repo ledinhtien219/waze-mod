@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.2.3";
+static const char *FW_VERSION = "1.2.4";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -132,6 +132,7 @@ enum AlertType {
 // prototypes that reference TurnType / AlertType before these enums exist.
 TurnType parseTurn(String s);
 AlertType parseAlert(String s);
+TurnType parseHlpTurn(JsonDocument &doc);
 bool alertEnabled(AlertType a);
 const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
@@ -710,15 +711,17 @@ class HudBleTxCallbacks : public BLECharacteristicCallbacks {
     // HLP/1 requires the GATT callback to return quickly. Copy the ATT chunk
     // into a bounded FreeRTOS queue; framing, JSON parsing and TFT rendering
     // happen later from loop().
-    std::string raw = characteristic->getValue();
-    if (raw.empty() || raw.size() > sizeof(BleRxChunk::bytes) || bleRxQueue == nullptr) {
+    auto value = characteristic->getValue();
+    String raw(value.c_str());
+
+    if (raw.length() == 0 || raw.length() > sizeof(BleRxChunk::bytes) || bleRxQueue == nullptr) {
       bleRxDropped++;
       return;
     }
 
     BleRxChunk chunk;
-    chunk.length = (uint16_t)raw.size();
-    memcpy(chunk.bytes, raw.data(), chunk.length);
+    chunk.length = (uint16_t)raw.length();
+    memcpy(chunk.bytes, raw.c_str(), chunk.length);
 
     if (xQueueSend(bleRxQueue, &chunk, 0) != pdTRUE) {
       bleRxDropped++;
