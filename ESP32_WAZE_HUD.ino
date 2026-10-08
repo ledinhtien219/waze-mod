@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.5";
+static const char *FW_VERSION = "1.3.6";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -110,8 +110,15 @@ enum TurnType {
   TURN_RIGHT,
   TURN_SLIGHT_LEFT,
   TURN_SLIGHT_RIGHT,
+  TURN_SHARP_LEFT,
+  TURN_SHARP_RIGHT,
+  TURN_KEEP_LEFT,
+  TURN_KEEP_RIGHT,
+  TURN_EXIT_LEFT,
+  TURN_EXIT_RIGHT,
   TURN_UTURN,
-  TURN_ROUNDABOUT
+  TURN_ROUNDABOUT,
+  TURN_ARRIVE
 };
 
 enum AlertType {
@@ -185,6 +192,7 @@ AlertType parseAlert(String s);
 TurnType parseHlpTurn(JsonDocument &doc);
 AlertType mapHlpAlert(uint8_t code);
 const char* hlpAlertLabel(uint8_t code);
+String currentIpString();
 bool alertEnabled(AlertType a);
 const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
@@ -223,6 +231,7 @@ HudState renderedHud;
 AppSettings renderedSettings;
 bool hudRenderValid = false;
 bool renderedLinkLost = false;
+String renderedMainIp = "";
 bool overspeedBorderVisible = false;
 uint32_t lastOverspeedBlink = 0;
 
@@ -238,33 +247,27 @@ const uint16_t C_GREY    = 0x8410;
 const uint16_t C_GREEN   = 0x07E0;
 
 String cleanText(String s) {
-  // Built-in Adafruit GFX font is ASCII only.
-  // Preserve ASCII and replace unsupported UTF-8 bytes with spaces.
-  String out;
-  out.reserve(s.length());
-  bool lastSpace = false;
-  for (size_t i = 0; i < s.length(); i++) {
-    uint8_t c = (uint8_t)s[i];
-    if (c >= 32 && c <= 126) {
-      out += (char)c;
-      lastSpace = false;
-    } else if (!lastSpace) {
-      out += ' ';
-      lastSpace = true;
-    }
-  }
-  out.trim();
-  return out;
+  return normalizeRoadName(s);
 }
 
 TurnType parseTurn(String s) {
   s.toLowerCase();
+  s.replace("-", "_");
+  s.replace(" ", "_");
+
   if (s == "left") return TURN_LEFT;
   if (s == "right") return TURN_RIGHT;
   if (s == "slight_left") return TURN_SLIGHT_LEFT;
   if (s == "slight_right") return TURN_SLIGHT_RIGHT;
-  if (s == "uturn") return TURN_UTURN;
+  if (s == "sharp_left") return TURN_SHARP_LEFT;
+  if (s == "sharp_right") return TURN_SHARP_RIGHT;
+  if (s == "keep_left") return TURN_KEEP_LEFT;
+  if (s == "keep_right") return TURN_KEEP_RIGHT;
+  if (s == "exit_left") return TURN_EXIT_LEFT;
+  if (s == "exit_right") return TURN_EXIT_RIGHT;
+  if (s == "uturn" || s == "u_turn") return TURN_UTURN;
   if (s == "roundabout") return TURN_ROUNDABOUT;
+  if (s == "arrive" || s == "destination") return TURN_ARRIVE;
   return TURN_STRAIGHT;
 }
 
@@ -324,35 +327,33 @@ void sendHlpDev() {
 }
 
 TurnType parseHlpTurn(JsonDocument &doc) {
-  // HLP/1 uses the numeric trn enum. Map additive codes to the closest
-  // primitive supported by this renderer.
   if (!doc["trn"].isNull()) {
     int code = (int)doc["trn"];
     switch (code) {
-      case 1: return TURN_STRAIGHT;       // CONTINUE
-      case 2: return TURN_LEFT;
-      case 3: return TURN_RIGHT;
-      case 4: return TURN_SLIGHT_LEFT;
-      case 5: return TURN_SLIGHT_RIGHT;
-      case 6: return TURN_LEFT;           // SHARP_LEFT
-      case 7: return TURN_RIGHT;          // SHARP_RIGHT
+      case 1:  return TURN_STRAIGHT;
+      case 2:  return TURN_LEFT;
+      case 3:  return TURN_RIGHT;
+      case 4:  return TURN_SLIGHT_LEFT;
+      case 5:  return TURN_SLIGHT_RIGHT;
+      case 6:  return TURN_SHARP_LEFT;
+      case 7:  return TURN_SHARP_RIGHT;
       case 8:
-      case 9: return TURN_UTURN;
+      case 9:  return TURN_UTURN;
       case 10:
       case 11:
       case 12:
       case 19:
       case 20: return TURN_ROUNDABOUT;
-      case 13:
-      case 15: return TURN_SLIGHT_LEFT;   // KEEP/EXIT LEFT
-      case 14:
-      case 16: return TURN_SLIGHT_RIGHT;  // KEEP/EXIT RIGHT
-      case 17: return TURN_STRAIGHT;      // ARRIVE
-      default: return TURN_STRAIGHT;
+      case 13: return TURN_KEEP_LEFT;
+      case 14: return TURN_KEEP_RIGHT;
+      case 15: return TURN_EXIT_LEFT;
+      case 16: return TURN_EXIT_RIGHT;
+      case 17: return TURN_ARRIVE;
+      default: return hud.turn;
     }
   }
 
-  // Compatibility with local HTTP test payloads.
+  // Fallback for test payloads / protocol variants.
   const char *keys[] = {"turn", "maneuver", "man", "dir"};
   for (const char *key : keys) {
     if (!doc[key].isNull() && doc[key].is<const char*>()) {
@@ -646,6 +647,12 @@ const char* alertLabel(AlertType a) {
   }
 }
 
+String currentIpString() {
+  if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
+  if (apMode) return WiFi.softAPIP().toString();
+  return "--";
+}
+
 String formatDistance(int m) {
   if (m < 0) return "--";
   if (m < 1000) return String(m) + " m";
@@ -874,54 +881,114 @@ void drawWazeAlertIcon(uint8_t code, int cx, int cy) {
 }
 
 void drawArrow(TurnType turn, int cx, int cy) {
-  uint16_t c = C_BLUE;
-  int w = 11;
+  const uint16_t c = C_BLUE;
+  const int shaft = 9;
+
+  auto thickLine = [&](int x1, int y1, int x2, int y2) {
+    tft.drawLine(x1, y1, x2, y2, c);
+    tft.drawLine(x1 + 1, y1, x2 + 1, y2, c);
+    tft.drawLine(x1 - 1, y1, x2 - 1, y2, c);
+    tft.drawLine(x1, y1 + 1, x2, y2 + 1, c);
+    tft.drawLine(x1, y1 - 1, x2, y2 - 1, c);
+  };
 
   if (turn == TURN_STRAIGHT) {
-    tft.fillRect(cx - w/2, cy - 21, w, 44, c);
-    tft.fillTriangle(cx - 20, cy - 17, cx + 20, cy - 17, cx, cy - 39, c);
+    tft.fillRect(cx - shaft/2, cy - 12, shaft, 34, c);
+    tft.fillTriangle(cx, cy - 34, cx - 15, cy - 12, cx + 15, cy - 12, c);
     return;
   }
 
-  if (turn == TURN_LEFT || turn == TURN_RIGHT || turn == TURN_SLIGHT_LEFT || turn == TURN_SLIGHT_RIGHT) {
-    bool right = (turn == TURN_RIGHT || turn == TURN_SLIGHT_RIGHT);
+  if (turn == TURN_LEFT || turn == TURN_RIGHT) {
+    int dir = turn == TURN_RIGHT ? 1 : -1;
+    tft.fillRect(cx - shaft/2, cy - 1, shaft, 24, c);
+    if (dir < 0) tft.fillRect(cx - 27, cy - 1, 28, shaft, c);
+    else         tft.fillRect(cx,      cy - 1, 28, shaft, c);
+    int tip = cx + dir * 34;
+    int base = cx + dir * 20;
+    tft.fillTriangle(tip, cy + 3, base, cy - 8, base, cy + 14, c);
+    return;
+  }
+
+  if (turn == TURN_SLIGHT_LEFT || turn == TURN_SLIGHT_RIGHT ||
+      turn == TURN_KEEP_LEFT || turn == TURN_KEEP_RIGHT ||
+      turn == TURN_EXIT_LEFT || turn == TURN_EXIT_RIGHT) {
+    bool right = (turn == TURN_SLIGHT_RIGHT || turn == TURN_KEEP_RIGHT || turn == TURN_EXIT_RIGHT);
     int dir = right ? 1 : -1;
-    tft.fillRect(cx - w/2, cy, w, 30, c);
-    tft.fillRect(right ? cx : cx - 31, cy - 7, 31, w, c);
-    int tipX = cx + dir * 43;
-    int baseX = cx + dir * 23;
-    tft.fillTriangle(tipX, cy - 2, baseX, cy - 17, baseX, cy + 14, c);
+
+    // Short vertical stem and a 45-degree branch.
+    tft.fillRect(cx - 4, cy + 2, 8, 21, c);
+    thickLine(cx, cy + 5, cx + dir * 24, cy - 19);
+    thickLine(cx, cy + 7, cx + dir * 25, cy - 17);
+
+    int tipX = cx + dir * 31;
+    int tipY = cy - 25;
+    int baseX = cx + dir * 19;
+    tft.fillTriangle(tipX, tipY,
+                     baseX, tipY + 3,
+                     tipX - dir * 3, tipY + 12, c);
+
+    // KEEP is shown as a fork; EXIT is shown with a short continuation.
+    if (turn == TURN_KEEP_LEFT || turn == TURN_KEEP_RIGHT) {
+      thickLine(cx, cy + 4, cx, cy - 16);
+    } else if (turn == TURN_EXIT_LEFT || turn == TURN_EXIT_RIGHT) {
+      tft.drawFastVLine(cx, cy - 11, 14, C_GREY);
+    }
+    return;
+  }
+
+  if (turn == TURN_SHARP_LEFT || turn == TURN_SHARP_RIGHT) {
+    int dir = turn == TURN_SHARP_RIGHT ? 1 : -1;
+    tft.fillRect(cx - 4, cy + 1, 8, 22, c);
+    int elbowX = cx + dir * 17;
+    tft.fillRect(dir < 0 ? elbowX : cx, cy - 10, 18, 8, c);
+    thickLine(cx, cy + 4, cx, cy - 7);
+    int tipX = cx + dir * 31;
+    tft.fillTriangle(tipX, cy - 6,
+                     cx + dir * 18, cy - 17,
+                     cx + dir * 18, cy + 5, c);
     return;
   }
 
   if (turn == TURN_UTURN) {
-    tft.fillRect(cx + 8, cy - 4, w, 35, c);
-    tft.drawCircle(cx, cy - 4, 23, c);
-    tft.fillCircle(cx, cy - 4, 16, C_BG);
-    tft.fillRect(cx - 29, cy - 10, 29, 23, C_BG);
-    tft.fillTriangle(cx - 29, cy - 4, cx - 10, cy - 18, cx - 10, cy + 9, c);
+    tft.fillRect(cx + 8, cy - 1, 8, 25, c);
+    tft.drawCircle(cx, cy - 4, 20, c);
+    tft.drawCircle(cx, cy - 4, 19, c);
+    tft.drawCircle(cx, cy - 4, 18, c);
+    tft.fillRect(cx - 27, cy - 11, 26, 23, C_BG);
+    tft.fillTriangle(cx - 27, cy - 4, cx - 11, cy - 16, cx - 11, cy + 8, c);
     return;
   }
 
-  // roundabout
-  tft.drawCircle(cx, cy, 24, c);
-  tft.drawCircle(cx, cy, 23, c);
-  tft.drawCircle(cx, cy, 22, c);
-  tft.fillTriangle(cx + 25, cy - 7, cx + 39, cy - 1, cx + 25, cy + 7, c);
+  if (turn == TURN_ROUNDABOUT) {
+    tft.drawCircle(cx, cy, 20, c);
+    tft.drawCircle(cx, cy, 19, c);
+    tft.drawCircle(cx, cy, 18, c);
+    tft.fillTriangle(cx + 21, cy - 7, cx + 34, cy, cx + 21, cy + 7, c);
+    return;
+  }
+
+  if (turn == TURN_ARRIVE) {
+    tft.fillRect(cx - 4, cy - 24, 8, 30, c);
+    tft.fillTriangle(cx, cy - 35, cx - 14, cy - 17, cx + 14, cy - 17, c);
+    tft.fillCircle(cx, cy + 18, 8, C_GREEN);
+    tft.fillCircle(cx, cy + 18, 3, C_BG);
+    return;
+  }
+
+  // Defensive fallback.
+  tft.fillRect(cx - 4, cy - 12, 8, 34, c);
+  tft.fillTriangle(cx, cy - 34, cx - 15, cy - 12, cx + 15, cy - 12, c);
 }
 
 void drawStaticFrame() {
   tft.fillScreen(C_BG);
 
-  // Top navigation strip
   tft.drawFastHLine(8, 34, 304, C_DARK);
 
-  // Main cards
-  tft.drawRoundRect(8, 44, 72, 144, 10, C_DARK);
-  tft.drawRoundRect(88, 44, 136, 144, 10, C_BLUE2);
-  tft.drawRoundRect(232, 44, 80, 144, 10, C_DARK);
+  tft.drawRoundRect(6,   44, 88, 146, 10, C_DARK);
+  tft.drawRoundRect(100, 44, 124, 146, 10, C_BLUE2);
+  tft.drawRoundRect(230, 44, 84, 146, 10, C_DARK);
 
-  // Footer
   tft.drawFastHLine(8, 198, 304, C_DARK);
 }
 
@@ -930,24 +997,28 @@ void drawTopPanel() {
 
   String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
   if (!road.length()) road = "WAZE HUD";
-  if (road.length() > 22) road = road.substring(0, 22);
+  if (road.length() > 24) road = road.substring(0, 24);
 
-  // Small accent marker
+  String ip = currentIpString();
+
   tft.fillRoundRect(8, 7, 5, 20, 2, C_BLUE);
 
+  // Reserve the right side for Wi-Fi/IP so the road never overlaps it.
   tft.setTextColor(C_WHITE, C_BG);
-  tft.setTextSize(road.length() > 16 ? 1 : 2);
-  tft.setCursor(20, road.length() > 16 ? 11 : 8);
+  uint8_t roadSize = road.length() <= 13 ? 2 : 1;
+  tft.setTextSize(roadSize);
+  tft.setCursor(20, roadSize == 2 ? 8 : 11);
   tft.print(road);
 
-  String dist = formatDistance(hud.distanceM);
-  tft.setTextSize(2);
-  tft.setTextColor(C_YELLOW, C_BG);
+  uint16_t wifiColor = WiFi.status() == WL_CONNECTED ? C_GREEN : (apMode ? C_YELLOW : C_GREY);
+  tft.fillCircle(218, 17, 3, wifiColor);
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextSize(1);
   int16_t x1, y1;
   uint16_t w, h;
-  tft.getTextBounds(dist, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(309 - w, 8);
-  tft.print(dist);
+  tft.getTextBounds(ip, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor(309 - w, 13);
+  tft.print(ip);
 }
 
 void drawMiniSpeedLimit(int cx, int cy, int limit, int radius) {
@@ -973,13 +1044,10 @@ String compactDistance(int m) {
 }
 
 void drawSpeedPanel() {
-  tft.fillRoundRect(9, 45, 70, 142, 9, C_BG);
-  tft.drawRoundRect(8, 44, 72, 144, 10, hud.overSpeed ? C_RED : C_DARK);
+  tft.fillRoundRect(7, 45, 86, 144, 9, C_BG);
+  tft.drawRoundRect(6, 44, 88, 146, 10, hud.overSpeed ? C_RED : C_DARK);
 
-  tft.setTextColor(C_GREY, C_BG);
-  tft.setTextSize(1);
-  tft.setCursor(18, 55);
-  tft.print("SPEED");
+  textCentered("SPEED", 6, 53, 88, 1, C_GREY);
 
   String speed = String(max(0, hud.speed));
   tft.setTextColor(hud.overSpeed ? C_RED : C_WHITE, C_BG);
@@ -988,51 +1056,64 @@ void drawSpeedPanel() {
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(speed, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(44 - w / 2, 78);
+  tft.setCursor(50 - w / 2, 75);
   tft.print(speed);
 
-  textCentered("km/h", 8, 122, 72, 1, C_GREY);
+  textCentered("km/h", 6, 118, 88, 1, C_GREY);
 
-  // Current and next limit side-by-side.
-  if (settings.showSpeedLimit) {
-    textCentered("NOW", 8, 136, 34, 1, C_GREY);
-    drawMiniSpeedLimit(25, 159, hud.speedLimit, 15);
+  // Strong visual separation: current limit on the left, upcoming limit on the right.
+  tft.drawFastVLine(50, 133, 49, C_DARK);
+  textCentered("NOW", 8, 132, 39, 1, C_WHITE);
+  textCentered("NEXT", 52, 132, 39, 1, hud.nextSpeedLimit > 0 ? C_BLUE : C_GREY);
 
-    if (hud.nextSpeedLimit > 0 && hud.nextSpeedLimit != hud.speedLimit) {
-      textCentered("NEXT", 43, 136, 36, 1, C_BLUE);
-      drawMiniSpeedLimit(61, 159, hud.nextSpeedLimit, 14);
+  if (settings.showSpeedLimit && hud.speedLimit > 0) {
+    drawMiniSpeedLimit(28, 160, hud.speedLimit, 15);
+  } else {
+    textCentered("--", 8, 154, 39, 2, C_GREY);
+  }
 
-      String d = compactDistance(hud.nextSpeedDistanceM);
-      if (d.length()) textCentered(d, 43, 179, 36, 1, C_GREY);
-    }
+  if (settings.showSpeedLimit && hud.nextSpeedLimit > 0 &&
+      hud.nextSpeedLimit != hud.speedLimit) {
+    drawMiniSpeedLimit(72, 160, hud.nextSpeedLimit, 14);
+    String d = compactDistance(hud.nextSpeedDistanceM);
+    if (d.length()) textCentered(d, 52, 179, 39, 1, C_GREY);
+  } else {
+    textCentered("--", 52, 154, 39, 2, C_GREY);
   }
 }
 
 void drawNavPanel() {
-  tft.fillRoundRect(89, 45, 134, 142, 9, C_BG);
-  tft.drawRoundRect(88, 44, 136, 144, 10, C_BLUE2);
+  tft.fillRoundRect(101, 45, 122, 144, 9, C_BG);
+  tft.drawRoundRect(100, 44, 124, 146, 10, C_BLUE2);
 
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(103, 55);
-  tft.print("NEXT TURN");
+  tft.setCursor(111, 53);
+  tft.print("NEXT");
 
-  // Large maneuver glyph; centered lower so the card breathes.
-  drawArrow(hud.turn, 156, 116);
+  String dist = formatDistance(hud.distanceM);
+  tft.setTextColor(C_YELLOW, C_BG);
+  tft.setTextSize(dist.length() > 7 ? 1 : 2);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(dist, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor(214 - w, dist.length() > 7 ? 56 : 52);
+  tft.print(dist);
 
-  // Add a subtle baseline under the maneuver.
-  tft.drawFastHLine(112, 172, 88, C_DARK);
+  drawArrow(hud.turn, 162, 132);
+
+  tft.drawFastHLine(121, 176, 82, C_DARK);
 }
 
 void drawAlertPanel(bool linkLost) {
-  tft.fillRoundRect(233, 45, 78, 142, 9, C_BG);
-  tft.drawRoundRect(232, 44, 80, 144, 10, linkLost ? C_RED : C_DARK);
+  tft.fillRoundRect(231, 45, 82, 144, 9, C_BG);
+  tft.drawRoundRect(230, 44, 84, 146, 10, linkLost ? C_RED : C_DARK);
 
   if (linkLost) {
     tft.fillCircle(272, 72, 5, C_RED);
-    textCentered("LINK", 232, 90, 80, 1, C_WHITE);
-    textCentered("LOST", 232, 107, 80, 2, C_RED);
-    textCentered("WAITING", 232, 146, 80, 1, C_GREY);
+    textCentered("LINK", 230, 90, 84, 1, C_WHITE);
+    textCentered("LOST", 230, 107, 84, 2, C_RED);
+    textCentered("WAITING", 230, 146, 84, 1, C_GREY);
     return;
   }
 
@@ -1041,28 +1122,28 @@ void drawAlertPanel(bool linkLost) {
 
     String label = String(hlpAlertLabel(hud.alertCode));
     if (label.length() > 10) label = label.substring(0, 10);
-    textCentered(label, 232, 100, 80, 1, C_WHITE);
+    textCentered(label, 230, 100, 84, 1, C_WHITE);
 
     // SPEED_DROP / END_SPEED_RESTRICTION carry a speed value.
     if (hud.alertValue >= 0 && (hud.alertCode == 8 || hud.alertCode == 22)) {
       String value = String(hud.alertValue) + " KM/H";
-      textCentered(value, 232, 120, 80, 1, C_YELLOW);
-      textCentered(formatDistance(hud.alertDistanceM), 232, 140, 80, 1, C_GREY);
+      textCentered(value, 230, 120, 84, 1, C_YELLOW);
+      textCentered(formatDistance(hud.alertDistanceM), 230, 140, 84, 1, C_GREY);
     } else if (hud.alertCode == 6 && hud.alertSeverity > 0) {
       String jam = "JAM " + String(hud.alertSeverity) + "/5";
-      textCentered(jam, 232, 120, 80, 1, C_YELLOW);
+      textCentered(jam, 230, 120, 84, 1, C_YELLOW);
       if (hud.alertDelayMin >= 0) {
-        textCentered("+" + String(hud.alertDelayMin) + " MIN", 232, 140, 80, 1, C_WHITE);
+        textCentered("+" + String(hud.alertDelayMin) + " MIN", 230, 140, 84, 1, C_WHITE);
       } else {
-        textCentered(formatDistance(hud.alertDistanceM), 232, 140, 80, 1, C_GREY);
+        textCentered(formatDistance(hud.alertDistanceM), 230, 140, 84, 1, C_GREY);
       }
     } else {
-      textCentered(formatDistance(hud.alertDistanceM), 232, 128, 80, 2, C_YELLOW);
+      textCentered(formatDistance(hud.alertDistanceM), 230, 128, 84, 2, C_YELLOW);
     }
   } else {
     tft.fillCircle(272, 72, 5, C_GREEN);
-    textCentered("ONLINE", 232, 92, 80, 1, C_GREEN);
-    textCentered("NO ALERT", 232, 130, 80, 1, C_GREY);
+    textCentered("ONLINE", 230, 92, 84, 1, C_GREEN);
+    textCentered("NO ALERT", 230, 130, 84, 1, C_GREY);
   }
 }
 
@@ -1126,10 +1207,11 @@ void drawHud() {
   bool linkLost = millis() - hud.updatedAt > HUD_TIMEOUT_MS;
   bool first = !hudRenderValid;
 
+  String mainIpNow = currentIpString();
   bool topDirty =
     first ||
     hud.road != renderedHud.road ||
-    hud.distanceM != renderedHud.distanceM ||
+    mainIpNow != renderedMainIp ||
     settings.showRoad != renderedSettings.showRoad;
 
   bool speedDirty =
@@ -1185,6 +1267,7 @@ void drawHud() {
   renderedHud = hud;
   renderedSettings = settings;
   renderedLinkLost = linkLost;
+  renderedMainIp = mainIpNow;
   hudRenderValid = true;
 }
 void drawWaiting() {

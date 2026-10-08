@@ -294,3 +294,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Web `/state` có thêm alert diagnostics.
 - Boot screen hiển thị trạng thái Wi-Fi và IP DHCP/AP mới ngay khi kết nối.
 - TFT SPI tăng từ 20 MHz lên 40 MHz để giảm thời gian redraw.
+
+
+## Firmware v1.3.6 — balanced HUD, clearer NOW/NEXT and live IP
+
+- Cân lại layout 320x240: SPEED 88px, NEXT maneuver 124px, alert 84px.
+- NOW/NEXT speed limits tách rõ hai cột; NEXT hiện khoảng cách đến giới hạn tốc độ kế tiếp.
+- Mũi tên nhỏ hơn và phân biệt straight/left/right/slight/sharp/keep/exit/U-turn/roundabout/arrive.
+- Map HLP `trn` sang đúng nhóm maneuver thay vì ép sharp/keep/exit thành left/right.
+- Header hiển thị tên đường đã bỏ dấu Unicode an toàn và IP Wi-Fi/AP hiện tại.
+- IP trên màn chính tự đổi sau khi DHCP cấp địa chỉ mới.
+- Giữ hệ thống alert HLP và icon cảnh báo chuyên biệt của v1.3.5.
