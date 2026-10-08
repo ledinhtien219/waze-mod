@@ -1,6 +1,7 @@
 package vn.ledinhtien.wazehudbridge
 
 import android.annotation.SuppressLint
+import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
 import android.bluetooth.BluetoothGattCharacteristic
@@ -136,7 +137,7 @@ object BleHudClient {
         connecting = true
         setStatus("Đang kết nối WAZE-HUD…")
         gatt?.close()
-        gatt = device.connectGatt(context, false, gattCallback, BluetoothGatt.TRANSPORT_LE)
+        gatt = device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
     }
 
     @SuppressLint("MissingPermission")
