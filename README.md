@@ -73,8 +73,7 @@ Firmware BLE lớn hơn giới hạn app mặc định của ESP32. Repo có s�
 3. Bấm **Quét & kết nối WAZE-HUD**.
 4. Khi trạng thái báo **Đã kết nối WAZE-HUD**, dữ liệu điều hướng được gửi qua BLE.
 
-ESP32 advertise BLE với tên `WAZE-HUD`. Service UUID: `6E400001-B5A3-F393-E0A9-E50E24DCCA9E`, RX characteristic: `6E400002-B5A3-F393-E0A9-E50E24DCCA9E`. JSON được gửi theo từng chunk và kết thúc bằng ký tự newline.
-
+ESP32 advertise BLE với tên `WAZE-HUD`. 
 ### Wi-Fi / Web Setting
 
 Lần đầu nếu chưa có Wi-Fi, ESP32 tạo AP:
@@ -237,3 +236,16 @@ Mockup dự kiến gồm hai phần:
 2. **Web Setting trên điện thoại**: giao diện tối, các nhóm cài đặt rõ ràng và có mục cập nhật OTA online.
 
 Ảnh mockup nên được lưu trong repo ở `docs/` nếu muốn hiển thị trực tiếp trong README.
+
+
+## BLE HLP/1 tương thích WazeMod
+
+Firmware v1.2.1 dùng đúng transport BLE HLP/1 của WazeMod:
+
+- Tên BLE: `WazeHUD`
+- Service: `8a7e0001-4d6e-4c48-9a9d-484c504c0001`
+- Android → HUD TX: `8a7e0002-4d6e-4c48-9a9d-484c504c0001`
+- HUD → Android RX notify: `8a7e0003-4d6e-4c48-9a9d-484c504c0001`
+- Capabilities: `8a7e0004-4d6e-4c48-9a9d-484c504c0001`
+
+Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` dạng BLE. Không chọn Bluetooth Classic cho firmware BLE này.

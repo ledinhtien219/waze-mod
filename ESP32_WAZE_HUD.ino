@@ -12,6 +12,7 @@
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
+#include <BLE2902.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====
 #define TFT_CS   27
@@ -23,11 +24,13 @@
 
 static const char *AP_NAME = "WAZE-HUD";
 static const char *AP_PASS = "12345678";
-static const char *BLE_DEVICE_NAME = "WAZE-HUD";
-static const char *BLE_SERVICE_UUID = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
-static const char *BLE_RX_UUID      = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
+static const char *BLE_DEVICE_NAME = "WazeHUD";
+static const char *BLE_SERVICE_UUID = "8a7e0001-4d6e-4c48-9a9d-484c504c0001";
+static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
+static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
+static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.2.0";
+static const char *FW_VERSION = "1.2.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -39,7 +42,10 @@ String wifiSSID;
 String wifiPASS;
 bool apMode = false;
 bool bleConnected = false;
+bool bleHlpReady = false;
 String bleRxBuffer;
+BLECharacteristic *bleNotifyCharacteristic = nullptr;
+uint32_t lastBleDevNotify = 0;
 
 struct AppSettings {
   bool mirrorHud = false;
@@ -196,10 +202,96 @@ AlertType parseAlert(String s) {
   return ALERT_NONE;
 }
 
+void sendHlpLine(const String &line) {
+  if (!bleConnected || bleNotifyCharacteristic == nullptr) return;
+
+  String frame = line;
+  if (!frame.endsWith("\n")) frame += "\n";
+
+  // 20-byte chunks are valid even when the peer keeps the default ATT MTU 23.
+  const size_t chunkSize = 20;
+  for (size_t offset = 0; offset < frame.length(); offset += chunkSize) {
+    size_t count = min(chunkSize, frame.length() - offset);
+    bleNotifyCharacteristic->setValue(
+      (uint8_t *)(frame.c_str() + offset),
+      count
+    );
+    bleNotifyCharacteristic->notify();
+    delay(2);
+  }
+}
+
+void sendHlpDev() {
+  sendHlpLine(
+    String("{\"v\":1,\"t\":\"dev\",\"transport\":\"ble\",\"model\":\"ESP32-WazeHUD\",\"fw\":\"") +
+    FW_VERSION +
+    "\",\"rate\":4}"
+  );
+}
+
+TurnType parseHlpTurn(JsonDocument &doc) {
+  // Prefer textual maneuver fields when present.
+  const char *keys[] = {"turn", "maneuver", "man", "dir"};
+  for (const char *key : keys) {
+    if (!doc[key].isNull() && doc[key].is<const char*>()) {
+      return parseTurn(String((const char*)doc[key]));
+    }
+  }
+  return hud.turn;
+}
+
 bool applyHudPayload(const String &payload) {
   JsonDocument doc;
   if (deserializeJson(doc, payload)) return false;
 
+  String type = String((const char*)(doc["t"] | ""));
+
+  // HLP/1 keepalive.
+  if (type == "ping") {
+    sendHlpLine("{\"v\":1,\"t\":\"pong\"}");
+    return true;
+  }
+
+  // Android acknowledgement after the device declaration.
+  if (type == "hi") {
+    bleHlpReady = true;
+    Serial.println("HLP/1 handshake ready");
+    return true;
+  }
+
+  // Native HLP/1 state frame from WazeMod.
+  if (type == "s") {
+    if (!doc["spd"].isNull()) hud.speed = constrain((int)doc["spd"], 0, 299);
+
+    // WazeMod uses compact fields. Keep aliases so firmware also tolerates
+    // protocol revisions and test payloads.
+    if (!doc["lim"].isNull()) hud.speedLimit = constrain((int)doc["lim"], 0, 199);
+    else if (!doc["speed_limit"].isNull()) hud.speedLimit = constrain((int)doc["speed_limit"], 0, 199);
+
+    if (!doc["dist"].isNull()) hud.distanceM = constrain((int)doc["dist"], 0, 65000);
+    else if (!doc["distance_m"].isNull()) hud.distanceM = constrain((int)doc["distance_m"], 0, 65000);
+
+    if (!doc["st2"].isNull()) hud.road = String((const char*)doc["st2"]);
+    else if (!doc["st1"].isNull()) hud.road = String((const char*)doc["st1"]);
+    else if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
+
+    if (!doc["eta"].isNull()) hud.eta = String((const char*)doc["eta"]);
+    if (!doc["route"].isNull()) hud.route = String((const char*)doc["route"]);
+
+    if (!doc["remaining_km"].isNull()) {
+      hud.remainingKm = max(0.0f, (float)doc["remaining_km"]);
+    } else if (!doc["rem_km"].isNull()) {
+      hud.remainingKm = max(0.0f, (float)doc["rem_km"]);
+    }
+
+    hud.turn = parseHlpTurn(doc);
+
+    hud.updatedAt = millis();
+    hud.valid = true;
+    return true;
+  }
+
+  // Existing HTTP/test JSON format.
   if (!doc["turn"].isNull()) hud.turn = parseTurn(String((const char*)doc["turn"]));
   if (!doc["distance_m"].isNull()) hud.distanceM = constrain((int)doc["distance_m"], 0, 65000);
   if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
@@ -487,7 +579,7 @@ void drawHud() {
 void drawWaiting() {
   tft.fillScreen(C_BG);
   textCentered("WAZE HUD", 0, 36, 320, 4, C_BLUE);
-  textCentered(bleConnected ? "BLE CONNECTED" : "BLE: WAZE-HUD", 0, 100, 320, 2, bleConnected ? C_GREEN : C_WHITE);
+  textCentered(bleConnected ? "BLE CONNECTED" : "BLE: WazeHUD", 0, 100, 320, 2, bleConnected ? C_GREEN : C_WHITE);
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
   textCentered(ip, 0, 142, 320, 2, C_YELLOW);
   textCentered(apMode ? "Wi-Fi setup + Web Setting" : "Web Setting / OTA", 0, 178, 320, 1, C_GREY);
@@ -496,35 +588,47 @@ void drawWaiting() {
 class HudBleServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     bleConnected = true;
+    bleHlpReady = false;
+    bleRxBuffer = "";
+    lastBleDevNotify = 0;
     if (!hud.valid) drawWaiting();
-    Serial.println("BLE client connected");
+    Serial.println("BLE HLP client connected");
   }
 
   void onDisconnect(BLEServer *server) override {
     bleConnected = false;
+    bleHlpReady = false;
     bleRxBuffer = "";
     if (!hud.valid) drawWaiting();
     BLEDevice::getAdvertising()->start();
-    Serial.println("BLE client disconnected; advertising restarted");
+    Serial.println("BLE HLP client disconnected; advertising restarted");
   }
 };
 
-class HudBleRxCallbacks : public BLECharacteristicCallbacks {
+class HudBleTxCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *characteristic) override {
-    auto raw = characteristic->getValue();
-    String chunk(raw.c_str());
+    std::string raw = characteristic->getValue();
 
-    for (size_t i = 0; i < chunk.length(); i++) {
-      char c = chunk[i];
+    for (size_t i = 0; i < raw.size(); i++) {
+      char c = raw[i];
+
       if (c == '\n') {
         String payload = bleRxBuffer;
         bleRxBuffer = "";
         payload.trim();
-        if (payload.length() && applyHudPayload(payload)) {
-          drawHud();
+
+        if (payload.length()) {
+          Serial.print("HLP RX: ");
+          Serial.println(payload);
+
+          bool handled = applyHudPayload(payload);
+          if (handled && payload.indexOf("\"t\":\"s\"") >= 0) {
+            drawHud();
+          }
         }
       } else if (c != '\r') {
-        if (bleRxBuffer.length() < 1536) {
+        // HLP/1 frames are bounded; drop an overlong/malformed frame safely.
+        if (bleRxBuffer.length() < 768) {
           bleRxBuffer += c;
         } else {
           bleRxBuffer = "";
@@ -541,22 +645,39 @@ void setupBLE() {
   bleServer->setCallbacks(new HudBleServerCallbacks());
 
   BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
-  BLECharacteristic *rx = service->createCharacteristic(
-    BLE_RX_UUID,
-    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR
+
+  // Android -> HUD. WazeMod requires write WITH response.
+  BLECharacteristic *tx = service->createCharacteristic(
+    BLE_TX_UUID,
+    BLECharacteristic::PROPERTY_WRITE
   );
-  rx->setCallbacks(new HudBleRxCallbacks());
+  tx->setCallbacks(new HudBleTxCallbacks());
+
+  // HUD -> Android. WazeMod requires notification + CCCD 0x2902.
+  bleNotifyCharacteristic = service->createCharacteristic(
+    BLE_RX_UUID,
+    BLECharacteristic::PROPERTY_NOTIFY
+  );
+  bleNotifyCharacteristic->addDescriptor(new BLE2902());
+
+  // Optional capabilities characteristic defined by HLP/1.
+  BLECharacteristic *caps = service->createCharacteristic(
+    BLE_CAPS_UUID,
+    BLECharacteristic::PROPERTY_READ
+  );
+  caps->setValue("{\"v\":1,\"caps\":{\"transport\":\"ble\",\"maxFrame\":512}}\n");
 
   service->start();
 
   BLEAdvertising *advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(BLE_SERVICE_UUID);
   advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
   advertising->start();
 
-  Serial.println("BLE advertising as WAZE-HUD");
+  Serial.println("BLE HLP/1 advertising as WazeHUD");
 }
-
 
 bool checkForUpdate() {
   if (WiFi.status() != WL_CONNECTED) {
@@ -877,6 +998,14 @@ void setup() {
 }
 
 void loop() {
+  // Send HLP device declaration repeatedly until WazeMod answers with "hi".
+  // Notifications sent before CCCD subscription are harmless; a later retry
+  // reaches Android as soon as RX notifications are enabled.
+  if (bleConnected && !bleHlpReady && millis() - lastBleDevNotify >= 350) {
+    lastBleDevNotify = millis();
+    sendHlpDev();
+  }
+
   server.handleClient();
 
   static uint32_t lastRefresh = 0;
