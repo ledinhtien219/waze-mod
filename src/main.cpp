@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.2.4";
+static const char *FW_VERSION = "1.3.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -494,121 +494,179 @@ void drawArrow(TurnType turn, int cx, int cy) {
 
 void drawStaticFrame() {
   tft.fillScreen(C_BG);
-  tft.drawFastVLine(68, 0, 200, C_DARK);
-  tft.drawFastVLine(222, 0, 200, C_DARK);
-  tft.drawRoundRect(2, 202, 316, 36, 8, C_BLUE2);
+
+  // Top navigation strip
+  tft.drawFastHLine(8, 38, 304, C_DARK);
+
+  // Main cards
+  tft.drawRoundRect(6, 47, 84, 145, 10, C_DARK);
+  tft.drawRoundRect(96, 47, 130, 145, 10, C_BLUE2);
+  tft.drawRoundRect(232, 47, 82, 145, 10, C_DARK);
+
+  // Footer
+  tft.drawFastHLine(8, 201, 304, C_DARK);
 }
 
-void drawLeftPanel() {
-  // Clear only this panel. Keeping the vertical divider intact avoids a full-screen flash.
-  tft.fillRect(0, 0, 68, 200, C_BG);
+void drawTopPanel() {
+  tft.fillRect(0, 0, 320, 38, C_BG);
+
+  String road = settings.showRoad ? cleanText(hud.road) : "";
+  if (!road.length()) road = "WAZE HUD";
+  if (road.length() > 25) road = road.substring(0, 25);
+
+  // Small accent marker
+  tft.fillRoundRect(8, 8, 5, 22, 2, C_BLUE);
 
   tft.setTextColor(C_WHITE, C_BG);
-  tft.setTextSize(5);
+  tft.setTextSize(road.length() > 18 ? 1 : 2);
+  tft.setCursor(20, road.length() > 18 ? 13 : 10);
+  tft.print(road);
+
+  String dist = formatDistance(hud.distanceM);
+  tft.setTextSize(2);
+  tft.setTextColor(C_YELLOW, C_BG);
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft.getTextBounds(dist, 0, 0, &x1, &y1, &w, &h);
+  tft.setCursor(309 - w, 10);
+  tft.print(dist);
+}
+
+void drawSpeedPanel() {
+  tft.fillRoundRect(7, 48, 82, 143, 9, C_BG);
+  tft.drawRoundRect(6, 47, 84, 145, 10, C_DARK);
+
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(18, 58);
+  tft.print("SPEED");
+
   String speed = String(max(0, hud.speed));
+  tft.setTextColor(C_WHITE, C_BG);
+  tft.setTextSize(speed.length() >= 3 ? 4 : 5);
+
   int16_t x1, y1;
   uint16_t w, h;
   tft.getTextBounds(speed, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(34 - w / 2, 7);
+  tft.setCursor(48 - w / 2, 78);
   tft.print(speed);
 
+  tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(19, 48);
-  tft.print("km/h");
+  textCentered("km/h", 6, 126, 84, 1, C_GREY);
 
   if (settings.showSpeedLimit) {
-    drawSpeedLimit(34, 90, hud.speedLimit);
-  }
+    // Smaller road-sign style limit so the speed remains the visual priority.
+    int cx = 48;
+    int cy = 161;
+    tft.fillCircle(cx, cy, 22, C_RED);
+    tft.fillCircle(cx, cy, 17, C_WHITE);
 
-  if (hud.alert == ALERT_CAMERA && settings.alertCamera) {
-    drawCameraGlyph(34, 137, C_WHITE);
-    textCentered(formatDistance(hud.alertDistanceM), 0, 151, 68, 1, C_WHITE);
+    String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
+    tft.setTextColor(ILI9341_BLACK, C_WHITE);
+    tft.setTextSize(hud.speedLimit >= 100 ? 1 : 2);
+    tft.getTextBounds(limit, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor(cx - w / 2, cy - h / 2);
+    tft.print(limit);
   }
 }
 
-void drawCenterPanel() {
-  tft.fillRect(69, 0, 153, 200, C_BG);
+void drawNavPanel() {
+  tft.fillRoundRect(97, 48, 128, 143, 9, C_BG);
+  tft.drawRoundRect(96, 47, 130, 145, 10, C_BLUE2);
 
-  textCentered(formatDistance(hud.distanceM), 69, 5, 153, 3, C_YELLOW);
-  drawArrow(hud.turn, 145, 88);
+  tft.setTextColor(C_BLUE, C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(108, 58);
+  tft.print("NEXT TURN");
 
-  String road = settings.showRoad ? cleanText(hud.road) : "";
-  if (road.length() > 21) road = road.substring(0, 21);
-  textCentered(road, 72, 165, 148, road.length() > 16 ? 1 : 2, C_WHITE);
+  // Large maneuver glyph; centered lower so the card breathes.
+  drawArrow(hud.turn, 161, 121);
+
+  // Add a subtle baseline under the maneuver.
+  tft.drawFastHLine(116, 174, 90, C_DARK);
 }
 
-void drawRightPanel(bool linkLost) {
-  tft.fillRect(223, 0, 97, 200, C_BG);
-
-  if (hud.alert != ALERT_NONE && alertEnabled(hud.alert)) {
-    drawAlertGlyph(hud.alert, 246, 34);
-    tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_BG);
-    tft.setCursor(270, 18);
-    tft.print(alertLabel(hud.alert));
-
-    tft.setTextColor(C_BLUE, C_BG);
-    tft.setTextSize(2);
-    tft.setCursor(267, 41);
-    String d = formatDistance(hud.alertDistanceM);
-    if (d.length() > 7) {
-      tft.setTextSize(1);
-      tft.setCursor(270, 45);
-    }
-    tft.print(d);
-  } else {
-    textCentered("NO ALERT", 224, 35, 94, 1, C_GREY);
-  }
-
-  tft.drawRoundRect(229, 73, 84, 37, 5, C_DARK);
-  textCentered("NAV ACTIVE", 230, 82, 82, 1, C_GREEN);
-
-  tft.drawRoundRect(229, 117, 84, 64, 5, C_DARK);
-  textCentered("NEXT", 230, 124, 82, 1, C_GREY);
-  textCentered(formatDistance(hud.distanceM), 230, 143, 82, 2, C_BLUE);
+void drawAlertPanel(bool linkLost) {
+  tft.fillRoundRect(233, 48, 80, 143, 9, C_BG);
+  tft.drawRoundRect(232, 47, 82, 145, 10, linkLost ? C_RED : C_DARK);
 
   if (linkLost) {
-    tft.fillRect(229, 184, 84, 14, C_RED);
-    textCentered("LINK LOST", 229, 187, 84, 1, C_WHITE);
+    tft.fillCircle(273, 76, 6, C_RED);
+    textCentered("LINK", 232, 93, 82, 1, C_WHITE);
+    textCentered("LOST", 232, 108, 82, 2, C_RED);
+    textCentered("WAITING", 232, 150, 82, 1, C_GREY);
+    return;
+  }
+
+  if (hud.alert != ALERT_NONE && alertEnabled(hud.alert)) {
+    drawAlertGlyph(hud.alert, 273, 78);
+
+    String label = alertLabel(hud.alert);
+    if (label.length() > 10) label = label.substring(0, 10);
+    textCentered(label, 232, 108, 82, 1, C_WHITE);
+
+    textCentered(formatDistance(hud.alertDistanceM), 232, 132, 82, 2, C_YELLOW);
+  } else {
+    tft.fillCircle(273, 74, 6, C_GREEN);
+    textCentered("ONLINE", 232, 92, 82, 1, C_GREEN);
+    textCentered("NO", 232, 122, 82, 1, C_GREY);
+    textCentered("ALERT", 232, 138, 82, 2, C_WHITE);
   }
 }
 
 void drawFooterPanel() {
-  // Clear the inside only; preserve the blue rounded border.
-  tft.fillRect(3, 203, 314, 34, C_BG);
+  tft.fillRect(0, 202, 320, 38, C_BG);
+  tft.drawFastHLine(8, 201, 304, C_DARK);
+
+  // LEFT
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(10, 209);
+  tft.print("LEFT");
 
   tft.setTextColor(C_WHITE, C_BG);
+  tft.setTextSize(2);
+  tft.setCursor(10, 222);
+  tft.print(String(hud.remainingKm, 1));
   tft.setTextSize(1);
-  tft.setCursor(12, 216);
-  tft.print("LEFT ");
+  tft.setTextColor(C_GREY, C_BG);
+  tft.print(" km");
+
+  // ETA
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setCursor(122, 209);
+  tft.print("ETA");
 
   tft.setTextColor(C_BLUE, C_BG);
   tft.setTextSize(2);
-  tft.print(String(hud.remainingKm, 1));
+  tft.setCursor(122, 222);
+  tft.print(settings.showEta ? hud.eta : "--:--");
+
+  // ROUTE
+  String route = settings.showRoute ? cleanText(hud.route) : "";
+  if (route.length() > 8) route = route.substring(0, 8);
 
   tft.setTextColor(C_GREY, C_BG);
   tft.setTextSize(1);
-  tft.setCursor(94, 216);
-  tft.print("KM");
+  tft.setCursor(246, 209);
+  tft.print("ROUTE");
 
-  tft.setTextColor(C_WHITE, C_BG);
-  tft.setCursor(124, 216);
-  tft.print("ETA ");
-
-  tft.setTextColor(C_BLUE, C_BG);
-  tft.setTextSize(2);
-  tft.print(settings.showEta ? hud.eta : "--:--");
-
-  String route = settings.showRoute ? cleanText(hud.route) : "";
-  if (route.length() > 7) route = route.substring(0, 7);
-  tft.setTextColor(C_BLUE, C_BG);
-  tft.setTextSize(2);
-
-  int16_t rx, ry;
-  uint16_t rw, rh;
-  tft.getTextBounds(route, 0, 0, &rx, &ry, &rw, &rh);
-  tft.setCursor(307 - rw, 216);
-  tft.print(route);
+  if (route.length()) {
+    tft.setTextColor(C_WHITE, C_BG);
+    tft.setTextSize(route.length() > 5 ? 1 : 2);
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft.getTextBounds(route, 0, 0, &x1, &y1, &w, &h);
+    tft.setCursor(310 - w, route.length() > 5 ? 225 : 222);
+    tft.print(route);
+  } else {
+    tft.setTextColor(C_GREY, C_BG);
+    tft.setTextSize(1);
+    tft.setCursor(281, 225);
+    tft.print("--");
+  }
 }
 
 void drawHud() {
@@ -617,21 +675,21 @@ void drawHud() {
   bool linkLost = millis() - hud.updatedAt > HUD_TIMEOUT_MS;
   bool first = !hudRenderValid;
 
-  bool leftDirty =
+  bool topDirty =
+    first ||
+    hud.road != renderedHud.road ||
+    hud.distanceM != renderedHud.distanceM ||
+    settings.showRoad != renderedSettings.showRoad;
+
+  bool speedDirty =
     first ||
     hud.speed != renderedHud.speed ||
     hud.speedLimit != renderedHud.speedLimit ||
-    hud.alert != renderedHud.alert ||
-    hud.alertDistanceM != renderedHud.alertDistanceM ||
-    settings.showSpeedLimit != renderedSettings.showSpeedLimit ||
-    settings.alertCamera != renderedSettings.alertCamera;
+    settings.showSpeedLimit != renderedSettings.showSpeedLimit;
 
-  bool centerDirty =
+  bool navDirty =
     first ||
-    hud.turn != renderedHud.turn ||
-    hud.distanceM != renderedHud.distanceM ||
-    hud.road != renderedHud.road ||
-    settings.showRoad != renderedSettings.showRoad;
+    hud.turn != renderedHud.turn;
 
   bool alertSettingChanged =
     settings.alertPolice != renderedSettings.alertPolice ||
@@ -641,13 +699,12 @@ void drawHud() {
     settings.alertRoadworks != renderedSettings.alertRoadworks ||
     settings.alertHazard != renderedSettings.alertHazard;
 
-  bool rightDirty =
+  bool alertDirty =
     first ||
     hud.alert != renderedHud.alert ||
     hud.alertDistanceM != renderedHud.alertDistanceM ||
-    hud.distanceM != renderedHud.distanceM ||
-    alertSettingChanged ||
-    linkLost != renderedLinkLost;
+    linkLost != renderedLinkLost ||
+    alertSettingChanged;
 
   bool footerDirty =
     first ||
@@ -657,16 +714,13 @@ void drawHud() {
     settings.showEta != renderedSettings.showEta ||
     settings.showRoute != renderedSettings.showRoute;
 
-  if (!leftDirty && !centerDirty && !rightDirty && !footerDirty) {
-    return;
-  }
+  if (!topDirty && !speedDirty && !navDirty && !alertDirty && !footerDirty) return;
 
-  if (first) {
-    drawStaticFrame();
-  }
-  if (leftDirty) drawLeftPanel();
-  if (centerDirty) drawCenterPanel();
-  if (rightDirty) drawRightPanel(linkLost);
+  if (first) drawStaticFrame();
+  if (topDirty) drawTopPanel();
+  if (speedDirty) drawSpeedPanel();
+  if (navDirty) drawNavPanel();
+  if (alertDirty) drawAlertPanel(linkLost);
   if (footerDirty) drawFooterPanel();
 
   renderedHud = hud;
@@ -677,11 +731,46 @@ void drawHud() {
 void drawWaiting() {
   hudRenderValid = false;
   tft.fillScreen(C_BG);
-  textCentered("WAZE HUD", 0, 36, 320, 4, C_BLUE);
-  textCentered(bleConnected ? "BLE CONNECTED" : "BLE: WazeHUD", 0, 100, 320, 2, bleConnected ? C_GREEN : C_WHITE);
+
+  // Minimal splash / connection screen.
+  tft.drawRoundRect(18, 24, 284, 192, 14, C_DARK);
+  tft.fillRoundRect(30, 40, 5, 42, 2, C_BLUE);
+
+  tft.setTextColor(C_WHITE, C_BG);
+  tft.setTextSize(3);
+  tft.setCursor(48, 43);
+  tft.print("WAZE HUD");
+
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(50, 73);
+  tft.print("ESP32  /  ILI9341");
+
+  tft.fillCircle(50, 112, 6, bleConnected ? C_GREEN : C_YELLOW);
+  tft.setTextColor(C_WHITE, C_BG);
+  tft.setTextSize(2);
+  tft.setCursor(68, 104);
+  tft.print(bleConnected ? "BLE CONNECTED" : "WAITING BLE");
+
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextSize(1);
+  tft.setCursor(50, 139);
+  tft.print("Device");
+  tft.setTextColor(C_BLUE, C_BG);
+  tft.setCursor(105, 139);
+  tft.print("WazeHUD");
+
   String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-  textCentered(ip, 0, 142, 320, 2, C_YELLOW);
-  textCentered(apMode ? "Wi-Fi setup + Web Setting" : "Web Setting / OTA", 0, 178, 320, 1, C_GREY);
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setCursor(50, 161);
+  tft.print("Web");
+  tft.setTextColor(C_WHITE, C_BG);
+  tft.setCursor(105, 161);
+  tft.print(ip);
+
+  tft.setTextColor(C_GREY, C_BG);
+  tft.setCursor(50, 188);
+  tft.print("Open WazeMod > HUD Link > BLE GATT");
 }
 
 class HudBleServerCallbacks : public BLEServerCallbacks {

@@ -274,3 +274,12 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 
 - Thêm prototype thủ công cho `parseHlpTurn(JsonDocument &doc)` để tránh lỗi auto-prototype của Arduino IDE: `TurnType does not name a type`.
 - Chuẩn hoá `BLECharacteristic::getValue()` qua `.c_str()` sang Arduino `String`, tương thích cả ESP32 core trả `std::string` lẫn core mới trả `String`.
+
+
+## Firmware v1.3.0 — HUD UI redesign
+
+- Bố cục mới tối giản kiểu ô tô: road/distance ở header, speed card bên trái, maneuver lớn ở giữa, alert/link card bên phải, ETA/remaining/route ở footer.
+- Bỏ các box `NAV ACTIVE`, `NEXT` thừa và giảm chữ nhỏ.
+- Màu nền đen, cyan làm accent, vàng chỉ dùng cho distance/cảnh báo.
+- Waiting screen được làm lại gọn hơn.
+- Vẫn giữ dirty-region rendering để không nháy toàn màn hình.
