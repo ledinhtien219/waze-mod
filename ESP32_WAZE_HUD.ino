@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.1";
+static const char *FW_VERSION = "1.3.2";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -604,12 +604,10 @@ void drawCameraGlyph(int cx, int cy, uint16_t color) {
 
 void drawAlertGlyph(AlertType a, int cx, int cy) {
   if (a == ALERT_NONE) return;
-  drawTriangleSign(cx, cy, 20);
+  if (a == ALERT_CAMERA) { drawCameraGlyph(cx, cy, C_YELLOW); return; }
+  drawTriangleSign(cx, cy, 18);
   uint16_t ink = ILI9341_BLACK;
   switch (a) {
-    case ALERT_CAMERA:
-      drawCameraGlyph(cx, cy + 5, ink);
-      break;
     case ALERT_POLICE:
       tft.fillCircle(cx, cy + 3, 6, ink);
       tft.fillRect(cx - 8, cy + 9, 16, 8, ink);
@@ -651,39 +649,39 @@ void drawAlertGlyph(AlertType a, int cx, int cy) {
 
 void drawArrow(TurnType turn, int cx, int cy) {
   uint16_t c = C_BLUE;
-  int w = 13;
+  int w = 11;
 
   if (turn == TURN_STRAIGHT) {
-    tft.fillRect(cx - w/2, cy - 25, w, 54, c);
-    tft.fillTriangle(cx - 25, cy - 20, cx + 25, cy - 20, cx, cy - 48, c);
+    tft.fillRect(cx - w/2, cy - 21, w, 44, c);
+    tft.fillTriangle(cx - 20, cy - 17, cx + 20, cy - 17, cx, cy - 39, c);
     return;
   }
 
   if (turn == TURN_LEFT || turn == TURN_RIGHT || turn == TURN_SLIGHT_LEFT || turn == TURN_SLIGHT_RIGHT) {
     bool right = (turn == TURN_RIGHT || turn == TURN_SLIGHT_RIGHT);
     int dir = right ? 1 : -1;
-    tft.fillRect(cx - w/2, cy, w, 36, c);
-    tft.fillRect(right ? cx : cx - 38, cy - 8, 38, w, c);
-    int tipX = cx + dir * 52;
-    int baseX = cx + dir * 28;
-    tft.fillTriangle(tipX, cy - 2, baseX, cy - 22, baseX, cy + 18, c);
+    tft.fillRect(cx - w/2, cy, w, 30, c);
+    tft.fillRect(right ? cx : cx - 31, cy - 7, 31, w, c);
+    int tipX = cx + dir * 43;
+    int baseX = cx + dir * 23;
+    tft.fillTriangle(tipX, cy - 2, baseX, cy - 17, baseX, cy + 14, c);
     return;
   }
 
   if (turn == TURN_UTURN) {
-    tft.fillRect(cx + 10, cy - 5, w, 43, c);
-    tft.drawCircle(cx, cy - 5, 27, c);
-    tft.fillCircle(cx, cy - 5, 19, C_BG);
-    tft.fillRect(cx - 35, cy - 12, 35, 28, C_BG);
-    tft.fillTriangle(cx - 35, cy - 5, cx - 12, cy - 22, cx - 12, cy + 12, c);
+    tft.fillRect(cx + 8, cy - 4, w, 35, c);
+    tft.drawCircle(cx, cy - 4, 23, c);
+    tft.fillCircle(cx, cy - 4, 16, C_BG);
+    tft.fillRect(cx - 29, cy - 10, 29, 23, C_BG);
+    tft.fillTriangle(cx - 29, cy - 4, cx - 10, cy - 18, cx - 10, cy + 9, c);
     return;
   }
 
   // roundabout
-  tft.drawCircle(cx, cy, 29, c);
-  tft.drawCircle(cx, cy, 28, c);
-  tft.drawCircle(cx, cy, 27, c);
-  tft.fillTriangle(cx + 31, cy - 9, cx + 48, cy - 1, cx + 31, cy + 8, c);
+  tft.drawCircle(cx, cy, 24, c);
+  tft.drawCircle(cx, cy, 23, c);
+  tft.drawCircle(cx, cy, 22, c);
+  tft.fillTriangle(cx + 25, cy - 7, cx + 39, cy - 1, cx + 25, cy + 7, c);
 }
 
 void drawStaticFrame() {
