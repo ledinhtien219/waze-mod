@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.3";
+static const char *FW_VERSION = "1.3.4";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -644,55 +644,193 @@ void drawSpeedLimit(int cx, int cy, int limit) {
 }
 
 void drawCameraGlyph(int cx, int cy, uint16_t color) {
-  tft.fillRect(cx - 13, cy - 9, 26, 18, color);
+  tft.fillRoundRect(cx - 14, cy - 9, 28, 18, 4, color);
   tft.fillRect(cx - 8, cy - 13, 10, 5, color);
   tft.fillCircle(cx, cy, 7, C_BG);
-  tft.drawCircle(cx, cy, 4, color);
+  tft.fillCircle(cx, cy, 3, color);
 }
 
-void drawAlertGlyph(AlertType a, int cx, int cy) {
-  if (a == ALERT_NONE) return;
-  if (a == ALERT_CAMERA) { drawCameraGlyph(cx, cy, C_YELLOW); return; }
-  drawTriangleSign(cx, cy, 18);
-  uint16_t ink = ILI9341_BLACK;
-  switch (a) {
-    case ALERT_POLICE:
-      tft.fillCircle(cx, cy + 3, 6, ink);
-      tft.fillRect(cx - 8, cy + 9, 16, 8, ink);
-      tft.drawLine(cx - 9, cy - 5, cx + 9, cy - 5, ink);
-      tft.drawLine(cx - 5, cy - 9, cx + 5, cy - 9, ink);
-      break;
-    case ALERT_ROADWORKS:
-      tft.fillCircle(cx, cy - 2, 3, ink);
-      tft.drawLine(cx, cy + 2, cx - 6, cy + 13, ink);
-      tft.drawLine(cx, cy + 2, cx + 6, cy + 12, ink);
-      tft.drawLine(cx - 5, cy + 4, cx + 8, cy + 1, ink);
-      break;
-    case ALERT_POTHOLE:
-      tft.drawLine(cx - 10, cy + 8, cx - 3, cy + 4, ink);
-      tft.drawLine(cx - 3, cy + 4, cx + 2, cy + 9, ink);
-      tft.drawLine(cx + 2, cy + 9, cx + 10, cy + 5, ink);
-      break;
-    case ALERT_CRASH:
-      tft.fillCircle(cx - 6, cy + 7, 5, ink);
-      tft.fillCircle(cx + 6, cy + 7, 5, ink);
-      tft.drawLine(cx - 8, cy, cx + 8, cy + 10, ink);
-      tft.drawLine(cx + 8, cy, cx - 8, cy + 10, ink);
-      break;
-    case ALERT_CLOSURE:
-      tft.fillRect(cx - 11, cy + 1, 22, 7, ink);
-      break;
-    case ALERT_TRAFFIC:
-    case ALERT_BLOCKED_LANE:
-      for (int i=-8;i<=8;i+=8) tft.drawLine(cx+i,cy-4,cx+i,cy+12,ink);
-      break;
-    default:
-      tft.setTextColor(ink, C_YELLOW);
-      tft.setTextSize(2);
-      tft.setCursor(cx - 5, cy - 3);
-      tft.print("!");
-      break;
+void drawAlertBadge(int cx, int cy, uint16_t bg) {
+  tft.fillCircle(cx, cy, 20, bg);
+  tft.drawCircle(cx, cy, 20, C_WHITE);
+}
+
+void drawWazeAlertIcon(uint8_t code, int cx, int cy) {
+  // Camera / enforcement family.
+  if (code == 2 || code == 40 || code == 41 || code == 42 ||
+      code == 43 || code == 44 || code == 45 || code == 46) {
+    drawAlertBadge(cx, cy, C_BLUE2);
+    drawCameraGlyph(cx, cy, C_WHITE);
+    return;
   }
+
+  // Red-light camera.
+  if (code == 3) {
+    drawAlertBadge(cx, cy, C_BLUE2);
+    tft.fillRoundRect(cx - 7, cy - 13, 14, 26, 3, C_DARK);
+    tft.fillCircle(cx, cy - 7, 3, C_RED);
+    tft.fillCircle(cx, cy, 3, C_YELLOW);
+    tft.fillCircle(cx, cy + 7, 3, C_GREEN);
+    tft.fillRect(cx + 8, cy - 4, 7, 8, C_WHITE);
+    tft.fillCircle(cx + 11, cy, 2, C_BG);
+    return;
+  }
+
+  // Police.
+  if (code == 1) {
+    drawAlertBadge(cx, cy, C_BLUE);
+    tft.fillCircle(cx, cy + 2, 6, C_WHITE);
+    tft.fillRect(cx - 8, cy + 8, 16, 7, C_WHITE);
+    tft.fillRect(cx - 11, cy - 8, 22, 4, C_WHITE);
+    tft.fillRect(cx - 6, cy - 12, 12, 5, C_WHITE);
+    return;
+  }
+
+  // Crash.
+  if (code == 5) {
+    drawAlertBadge(cx, cy, C_RED);
+    tft.fillRect(cx - 15, cy + 2, 11, 7, C_WHITE);
+    tft.fillRect(cx + 4, cy + 2, 11, 7, C_WHITE);
+    tft.fillCircle(cx - 11, cy + 11, 3, C_DARK);
+    tft.fillCircle(cx - 3, cy + 11, 3, C_DARK);
+    tft.fillCircle(cx + 7, cy + 11, 3, C_DARK);
+    tft.fillCircle(cx + 15, cy + 11, 3, C_DARK);
+    tft.drawLine(cx - 4, cy - 9, cx + 4, cy + 1, C_YELLOW);
+    tft.drawLine(cx + 4, cy - 9, cx - 4, cy + 1, C_YELLOW);
+    return;
+  }
+
+  // Traffic jam.
+  if (code == 6) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    for (int y = -10; y <= 8; y += 9) {
+      tft.fillRoundRect(cx - 13, cy + y, 26, 6, 2, C_WHITE);
+      tft.fillCircle(cx - 8, cy + y + 6, 2, C_DARK);
+      tft.fillCircle(cx + 8, cy + y + 6, 2, C_DARK);
+    }
+    return;
+  }
+
+  // Closure / no entry.
+  if (code == 7 || code == 38) {
+    drawAlertBadge(cx, cy, C_RED);
+    tft.fillRoundRect(cx - 13, cy - 4, 26, 8, 3, C_WHITE);
+    return;
+  }
+
+  // Road works.
+  if (code == 14) {
+    tft.fillTriangle(cx, cy - 20, cx - 20, cy + 18, cx + 20, cy + 18, 0xFD20);
+    tft.fillTriangle(cx, cy - 14, cx - 14, cy + 13, cx + 14, cy + 13, C_YELLOW);
+    tft.fillCircle(cx - 2, cy - 4, 3, C_DARK);
+    tft.drawLine(cx, cy, cx - 6, cy + 11, C_DARK);
+    tft.drawLine(cx, cy, cx + 7, cy + 9, C_DARK);
+    tft.drawLine(cx - 5, cy + 2, cx + 10, cy - 1, C_DARK);
+    return;
+  }
+
+  // Pothole.
+  if (code == 15) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    tft.drawFastHLine(cx - 14, cy - 6, 28, C_WHITE);
+    tft.drawLine(cx - 13, cy - 5, cx - 6, cy + 8, C_WHITE);
+    tft.drawLine(cx - 6, cy + 8, cx + 2, cy + 2, C_WHITE);
+    tft.drawLine(cx + 2, cy + 2, cx + 10, cy + 9, C_WHITE);
+    tft.drawLine(cx + 10, cy + 9, cx + 14, cy - 5, C_WHITE);
+    return;
+  }
+
+  // Weather / fog / flood / ice.
+  if (code == 16 || (code >= 50 && code <= 55)) {
+    drawAlertBadge(cx, cy, C_BLUE2);
+    tft.fillCircle(cx - 7, cy - 4, 6, C_WHITE);
+    tft.fillCircle(cx + 1, cy - 7, 8, C_WHITE);
+    tft.fillCircle(cx + 10, cy - 3, 5, C_WHITE);
+    tft.fillRect(cx - 12, cy - 4, 25, 8, C_WHITE);
+    tft.drawLine(cx - 8, cy + 8, cx - 11, cy + 14, C_BLUE);
+    tft.drawLine(cx, cy + 8, cx - 3, cy + 14, C_BLUE);
+    tft.drawLine(cx + 8, cy + 8, cx + 5, cy + 14, C_BLUE);
+    return;
+  }
+
+  // Blocked lane.
+  if (code == 17) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    tft.drawLine(cx - 10, cy - 13, cx - 10, cy + 13, C_WHITE);
+    tft.drawLine(cx + 10, cy - 13, cx + 10, cy + 13, C_WHITE);
+    tft.drawLine(cx - 5, cy - 6, cx + 5, cy + 6, C_RED);
+    tft.drawLine(cx + 5, cy - 6, cx - 5, cy + 6, C_RED);
+    return;
+  }
+
+  // Vehicle on shoulder.
+  if (code == 13) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    tft.fillRoundRect(cx - 12, cy - 3, 19, 9, 3, C_WHITE);
+    tft.fillRect(cx + 7, cy - 8, 4, 19, C_WHITE);
+    tft.fillCircle(cx - 8, cy + 8, 3, C_DARK);
+    tft.fillCircle(cx + 3, cy + 8, 3, C_DARK);
+    return;
+  }
+
+  // Animal / roadkill.
+  if (code == 47 || code == 49) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    tft.fillCircle(cx - 6, cy, 5, C_WHITE);
+    tft.fillCircle(cx + 6, cy, 5, C_WHITE);
+    tft.fillRect(cx - 7, cy, 14, 8, C_WHITE);
+    tft.fillTriangle(cx - 9, cy - 5, cx - 3, cy - 13, cx - 1, cy - 3, C_WHITE);
+    tft.fillTriangle(cx + 9, cy - 5, cx + 3, cy - 13, cx + 1, cy - 3, C_WHITE);
+    return;
+  }
+
+  // Object on road.
+  if (code == 48) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    tft.fillRect(cx - 10, cy - 10, 20, 20, C_WHITE);
+    tft.drawLine(cx - 10, cy - 10, cx, cy, C_DARK);
+    tft.drawLine(cx + 10, cy - 10, cx, cy, C_DARK);
+    return;
+  }
+
+  // Broken / traffic light.
+  if (code == 61 || code == 75) {
+    drawAlertBadge(cx, cy, C_DARK);
+    tft.fillRoundRect(cx - 7, cy - 15, 14, 30, 3, C_WHITE);
+    tft.fillCircle(cx, cy - 8, 4, C_RED);
+    tft.fillCircle(cx, cy, 4, C_YELLOW);
+    tft.fillCircle(cx, cy + 8, 4, C_GREEN);
+    if (code == 61) {
+      tft.drawLine(cx - 13, cy - 13, cx + 13, cy + 13, C_RED);
+      tft.drawLine(cx + 13, cy - 13, cx - 13, cy + 13, C_RED);
+    }
+    return;
+  }
+
+  // School / speed bump.
+  if (code == 56 || code == 57) {
+    drawAlertBadge(cx, cy, 0xFD20);
+    if (code == 56) {
+      tft.drawFastHLine(cx - 14, cy + 8, 28, C_WHITE);
+      tft.drawCircle(cx, cy + 7, 12, C_WHITE);
+      tft.fillRect(cx - 14, cy - 6, 28, 14, 0xFD20);
+    } else {
+      tft.fillCircle(cx, cy - 7, 4, C_WHITE);
+      tft.drawLine(cx, cy - 3, cx, cy + 8, C_WHITE);
+      tft.drawLine(cx, cy + 1, cx - 8, cy + 8, C_WHITE);
+      tft.drawLine(cx, cy + 1, cx + 8, cy + 8, C_WHITE);
+      tft.drawLine(cx, cy + 8, cx - 6, cy + 15, C_WHITE);
+      tft.drawLine(cx, cy + 8, cx + 6, cy + 15, C_WHITE);
+    }
+    return;
+  }
+
+  // Generic restriction / hazard.
+  drawAlertBadge(cx, cy, C_YELLOW);
+  tft.setTextColor(C_DARK, C_YELLOW);
+  tft.setTextSize(3);
+  tft.setCursor(cx - 6, cy - 10);
+  tft.print("!");
 }
 
 void drawArrow(TurnType turn, int cx, int cy) {
@@ -840,7 +978,7 @@ void drawAlertPanel(bool linkLost) {
   }
 
   if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
-    drawAlertGlyph(hud.alert, 272, 72);
+    drawWazeAlertIcon(hud.alertCode, 272, 72);
 
     String label = String(hlpAlertLabel(hud.alertCode));
     if (label.length() > 10) label = label.substring(0, 10);
