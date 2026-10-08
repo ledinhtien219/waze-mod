@@ -103,6 +103,15 @@ enum AlertType {
   ALERT_ANIMAL
 };
 
+// Explicit prototypes keep Arduino IDE's .ino preprocessor from generating
+// prototypes that reference TurnType / AlertType before these enums exist.
+TurnType parseTurn(String s);
+AlertType parseAlert(String s);
+bool alertEnabled(AlertType a);
+const char* alertLabel(AlertType a);
+void drawAlertGlyph(AlertType a, int cx, int cy);
+void drawArrow(TurnType turn, int cx, int cy);
+
 struct HudState {
   TurnType turn = TURN_STRAIGHT;
   uint16_t distanceM = 0;
