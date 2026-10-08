@@ -32,7 +32,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.3.0";
+static const char *FW_VERSION = "1.3.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -42,6 +42,8 @@ Preferences prefs;
 
 String wifiSSID;
 String wifiPASS;
+String shownIp = "";
+volatile bool wifiUiDirty = false;
 bool apMode = false;
 bool bleConnected = false;
 bool bleHlpReady = false;
@@ -133,6 +135,8 @@ enum AlertType {
 TurnType parseTurn(String s);
 AlertType parseAlert(String s);
 TurnType parseHlpTurn(JsonDocument &doc);
+AlertType mapHlpAlert(uint8_t code);
+const char* hlpAlertLabel(uint8_t code);
 bool alertEnabled(AlertType a);
 const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
@@ -150,8 +154,16 @@ struct HudState {
   float remainingKm = 0;
   String eta = "--:--";
   String route = "";
+
+  // HLP/1 nearest-alert mirror fields.
+  uint8_t alertCode = 0;       // alr
   AlertType alert = ALERT_NONE;
-  uint16_t alertDistanceM = 0;
+  int alertDistanceM = -1;     // alrD, -1 = none
+  int alertValue = -1;         // alrV when applicable
+  uint8_t alertSeverity = 0;   // alrS for traffic jam
+  int alertDelayMin = -1;      // alrM when Waze provides explicit delay
+  uint8_t alertCount = 0;      // alrs[] count when negotiated
+
   uint32_t updatedAt = 0;
   bool valid = false;
 } hud;
@@ -242,15 +254,52 @@ void sendHlpLine(const String &line) {
 }
 
 void sendHlpDev() {
-  sendHlpLine(
-    String("{\"v\":1,\"t\":\"dev\",\"transport\":\"ble\",\"model\":\"ESP32-WazeHUD\",\"fw\":\"") +
+  // Proper HLP/1 receiver declaration. alrs is opt-in; without this field
+  // Android only sends the nearest alert mirror (alr/alrD/alrV).
+  String dev =
+    String("{\"v\":1,\"t\":\"dev\",\"name\":\"WazeHUD-ESP32\",\"fw\":\"") +
     FW_VERSION +
-    "\",\"rate\":4}"
-  );
+    "\",\"proto\":[1],\"disp\":{\"w\":320,\"h\":240,\"color\":1},"
+    "\"can\":[\"speed\",\"limit\",\"turn\",\"street\",\"eta\",\"alerts\"],"
+    "\"want\":{\"rate\":4,\"fields\":["
+      "\"nav\",\"spd\",\"lim\",\"over\","
+      "\"trn\",\"trn2\",\"dst\",\"exit\","
+      "\"st\",\"st2\",\"eta\",\"rmin\",\"rm\",\"rkm\","
+      "\"alr\",\"alrD\",\"alrV\",\"alrS\",\"alrM\",\"alrs\""
+    "]}}";
+  sendHlpLine(dev);
 }
 
 TurnType parseHlpTurn(JsonDocument &doc) {
-  // Prefer textual maneuver fields when present.
+  // HLP/1 uses the numeric trn enum. Map additive codes to the closest
+  // primitive supported by this renderer.
+  if (!doc["trn"].isNull()) {
+    int code = (int)doc["trn"];
+    switch (code) {
+      case 1: return TURN_STRAIGHT;       // CONTINUE
+      case 2: return TURN_LEFT;
+      case 3: return TURN_RIGHT;
+      case 4: return TURN_SLIGHT_LEFT;
+      case 5: return TURN_SLIGHT_RIGHT;
+      case 6: return TURN_LEFT;           // SHARP_LEFT
+      case 7: return TURN_RIGHT;          // SHARP_RIGHT
+      case 8:
+      case 9: return TURN_UTURN;
+      case 10:
+      case 11:
+      case 12:
+      case 19:
+      case 20: return TURN_ROUNDABOUT;
+      case 13:
+      case 15: return TURN_SLIGHT_LEFT;   // KEEP/EXIT LEFT
+      case 14:
+      case 16: return TURN_SLIGHT_RIGHT;  // KEEP/EXIT RIGHT
+      case 17: return TURN_STRAIGHT;      // ARRIVE
+      default: return TURN_STRAIGHT;
+    }
+  }
+
+  // Compatibility with local HTTP test payloads.
   const char *keys[] = {"turn", "maneuver", "man", "dir"};
   for (const char *key : keys) {
     if (!doc[key].isNull() && doc[key].is<const char*>()) {
@@ -258,6 +307,116 @@ TurnType parseHlpTurn(JsonDocument &doc) {
     }
   }
   return hud.turn;
+}
+
+AlertType mapHlpAlert(uint8_t code) {
+  switch (code) {
+    case 0: return ALERT_NONE;
+    case 1: return ALERT_POLICE;
+
+    // All fixed/mobile enforcement camera variants.
+    case 2: case 3:
+    case 40: case 41: case 42: case 43: case 44: case 45: case 46:
+      return ALERT_CAMERA;
+
+    case 5: return ALERT_CRASH;
+    case 6: return ALERT_TRAFFIC;
+    case 7: case 38: return ALERT_CLOSURE;
+    case 13: return ALERT_CAR_ON_SHOULDER;
+    case 14: return ALERT_ROADWORKS;
+    case 15: return ALERT_POTHOLE;
+    case 16: case 50: case 51: case 52: case 53: case 54: case 55:
+      return ALERT_BAD_WEATHER;
+    case 17: return ALERT_BLOCKED_LANE;
+    case 47: case 49: return ALERT_ANIMAL;
+    case 48: return ALERT_OBJECT;
+    case 61: return ALERT_BROKEN_LIGHT;
+
+    // Generic road hazards / restrictions / signs not having a dedicated glyph.
+    default: return ALERT_HIGH_RISK;
+  }
+}
+
+const char* hlpAlertLabel(uint8_t code) {
+  switch (code) {
+    case 0: return "";
+    case 1: return "POLICE";
+    case 2: return "SPEED CAM";
+    case 3: return "RED LIGHT";
+    case 4: return "HAZARD";
+    case 5: return "ACCIDENT";
+    case 6: return "TRAFFIC";
+    case 7: return "CLOSED";
+    case 8: return "SPEED DROP";
+    case 9: return "NO PASS";
+    case 10: return "PASS OK";
+    case 11: return "RAILWAY";
+    case 12: return "TOLL";
+    case 13: return "VEHICLE";
+    case 14: return "ROADWORK";
+    case 15: return "POTHOLE";
+    case 16: return "WEATHER";
+    case 17: return "LANE";
+    case 18: return "DANGER";
+    case 19: return "EXIT";
+    case 20: return "REST AREA";
+    case 21: return "REST STOP";
+    case 22: return "END LIMIT";
+    case 23: return "RESIDENTIAL";
+    case 24: return "END RESID";
+    case 25: return "END BAN";
+    case 26: return "NO CAR";
+    case 27: return "NO MOTO";
+    case 28: return "NO LEFT";
+    case 29: return "NO RIGHT";
+    case 30: return "NO UTURN";
+    case 31: return "NO STRAIGHT";
+    case 32: return "STRAIGHT";
+    case 33: return "RIGHT ONLY";
+    case 34: return "LEFT ONLY";
+    case 35: return "CAR LANE";
+    case 36: return "MOTO LANE";
+    case 37: return "ONE WAY";
+    case 38: return "NO ENTRY";
+    case 39: return "RESTRICT";
+    case 40: return "CAMERA";
+    case 41: return "DUMMY CAM";
+    case 42: return "SEATBELT";
+    case 43: return "DIST CAM";
+    case 44: return "BUS CAM";
+    case 45: return "NOISE CAM";
+    case 46: return "STOP CAM";
+    case 47: return "ANIMAL";
+    case 48: return "OBJECT";
+    case 49: return "ROADKILL";
+    case 50: return "FLOOD";
+    case 51: return "FOG";
+    case 52: return "HAIL";
+    case 53: return "SNOW";
+    case 54: return "ICE";
+    case 55: return "SLIPPERY";
+    case 56: return "SPEED BUMP";
+    case 57: return "SCHOOL";
+    case 58: return "MERGING";
+    case 59: return "CURVE";
+    case 60: return "FORK";
+    case 61: return "BAD LIGHT";
+    case 62: return "CYCLIST";
+    case 63: return "EMERGENCY";
+    case 64: return "SAFETY";
+    case 65: return "NO STR/R";
+    case 66: return "NO L/U";
+    case 67: return "NO STR/L";
+    case 68: return "NO L/R";
+    case 69: return "CAR NO L/U";
+    case 70: return "CAR NO R/U";
+    case 71: return "NO R/U";
+    case 72: return "CAR NO LEFT";
+    case 73: return "CAR NO RIGHT";
+    case 74: return "CAR NO UTURN";
+    case 75: return "TRAFFIC LIGHT";
+    default: return "WARNING";
+  }
 }
 
 bool applyHudPayload(const String &payload) {
@@ -282,29 +441,60 @@ bool applyHudPayload(const String &payload) {
   // Native HLP/1 state frame from WazeMod.
   if (type == "s") {
     if (!doc["spd"].isNull()) hud.speed = constrain((int)doc["spd"], 0, 299);
-
-    // WazeMod uses compact fields. Keep aliases so firmware also tolerates
-    // protocol revisions and test payloads.
     if (!doc["lim"].isNull()) hud.speedLimit = constrain((int)doc["lim"], 0, 199);
-    else if (!doc["speed_limit"].isNull()) hud.speedLimit = constrain((int)doc["speed_limit"], 0, 199);
 
-    if (!doc["dist"].isNull()) hud.distanceM = constrain((int)doc["dist"], 0, 65000);
-    else if (!doc["distance_m"].isNull()) hud.distanceM = constrain((int)doc["distance_m"], 0, 65000);
+    int dst = doc["dst"].isNull() ? -1 : (int)doc["dst"];
+    hud.distanceM = dst >= 0 ? constrain(dst, 0, 65000) : 0;
 
-    if (!doc["st2"].isNull()) hud.road = String((const char*)doc["st2"]);
-    else if (!doc["st1"].isNull()) hud.road = String((const char*)doc["st1"]);
-    else if (!doc["road"].isNull()) hud.road = String((const char*)doc["road"]);
+    // st2 is the road after the maneuver; fall back to current street st.
+    String nextStreet = String((const char*)(doc["st2"] | ""));
+    String currentStreet = String((const char*)(doc["st"] | ""));
+    hud.road = nextStreet.length() ? nextStreet : currentStreet;
 
-    if (!doc["eta"].isNull()) hud.eta = String((const char*)doc["eta"]);
-    if (!doc["route"].isNull()) hud.route = String((const char*)doc["route"]);
+    hud.eta = String((const char*)(doc["eta"] | ""));
 
-    if (!doc["remaining_km"].isNull()) {
-      hud.remainingKm = max(0.0f, (float)doc["remaining_km"]);
-    } else if (!doc["rem_km"].isNull()) {
-      hud.remainingKm = max(0.0f, (float)doc["rem_km"]);
+    // rm (metres) is authoritative; rkm is legacy/fallback.
+    if (!doc["rm"].isNull()) {
+      hud.remainingKm = max(0.0f, (float)((int)doc["rm"]) / 1000.0f);
+    } else if (!doc["rkm"].isNull()) {
+      hud.remainingKm = max(0.0f, (float)doc["rkm"]);
     }
 
     hud.turn = parseHlpTurn(doc);
+
+    // Nearest alert mirror fields are baseline HLP/1 fields.
+    uint8_t code = doc["alr"].isNull() ? 0 : constrain((int)doc["alr"], 0, 255);
+    hud.alertCode = code;
+    hud.alert = mapHlpAlert(code);
+
+    int alertDistance = doc["alrD"].isNull() ? -1 : (int)doc["alrD"];
+    hud.alertDistanceM = alertDistance >= 0 ? constrain(alertDistance, 0, 65000) : -1;
+    hud.alertValue = doc["alrV"].isNull() ? -1 : (int)doc["alrV"];
+    hud.alertSeverity = doc["alrS"].isNull() ? 0 : constrain((int)doc["alrS"], 0, 5);
+    hud.alertDelayMin = doc["alrM"].isNull() ? -1 : max(-1, (int)doc["alrM"]);
+
+    // Full alert list is opt-in. The nearest mirror above remains authoritative
+    // for this compact 320x240 renderer, but expose the count for diagnostics.
+    if (doc["alrs"].is<JsonArray>()) {
+      JsonArray alerts = doc["alrs"].as<JsonArray>();
+      hud.alertCount = min((size_t)255, alerts.size());
+
+      // Be tolerant of producers where only alrs is present.
+      if (hud.alertCode == 0 && !alerts.isNull() && alerts.size() > 0) {
+        JsonObject first = alerts[0].as<JsonObject>();
+        if (!first.isNull()) {
+          hud.alertCode = constrain((int)(first["k"] | 0), 0, 255);
+          hud.alert = mapHlpAlert(hud.alertCode);
+          int d = (int)(first["d"] | -1);
+          hud.alertDistanceM = d >= 0 ? constrain(d, 0, 65000) : -1;
+          hud.alertValue = first["v"].isNull() ? -1 : (int)first["v"];
+          hud.alertSeverity = first["s"].isNull() ? 0 : constrain((int)first["s"], 0, 5);
+          hud.alertDelayMin = first["m"].isNull() ? -1 : (int)first["m"];
+        }
+      }
+    } else {
+      hud.alertCount = hud.alertCode ? 1 : 0;
+    }
 
     hud.updatedAt = millis();
     hud.valid = true;
@@ -323,8 +513,12 @@ bool applyHudPayload(const String &payload) {
 
   JsonObject alert = doc["alert"];
   if (!alert.isNull()) {
-    if (!alert["type"].isNull()) hud.alert = parseAlert(String((const char*)alert["type"]));
+    if (!alert["type"].isNull()) {
+      hud.alert = parseAlert(String((const char*)alert["type"]));
+      hud.alertCode = hud.alert == ALERT_NONE ? 0 : 4;
+    }
     if (!alert["distance_m"].isNull()) hud.alertDistanceM = constrain((int)alert["distance_m"], 0, 65000);
+    hud.alertCount = hud.alert == ALERT_NONE ? 0 : 1;
   }
 
   hud.updatedAt = millis();
@@ -364,8 +558,8 @@ const char* alertLabel(AlertType a) {
   }
 }
 
-String formatDistance(uint16_t m) {
-  if (m == 0) return "--";
+String formatDistance(int m) {
+  if (m < 0) return "--";
   if (m < 1000) return String(m) + " m";
   return String(m / 1000.0f, 1) + " km";
 }
@@ -599,19 +793,33 @@ void drawAlertPanel(bool linkLost) {
     return;
   }
 
-  if (hud.alert != ALERT_NONE && alertEnabled(hud.alert)) {
-    drawAlertGlyph(hud.alert, 273, 78);
+  if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
+    drawAlertGlyph(hud.alert, 273, 75);
 
-    String label = alertLabel(hud.alert);
-    if (label.length() > 10) label = label.substring(0, 10);
-    textCentered(label, 232, 108, 82, 1, C_WHITE);
+    String label = String(hlpAlertLabel(hud.alertCode));
+    if (label.length() > 12) label = label.substring(0, 12);
+    textCentered(label, 233, 105, 80, 1, C_WHITE);
 
-    textCentered(formatDistance(hud.alertDistanceM), 232, 132, 82, 2, C_YELLOW);
+    // SPEED_DROP / END_SPEED_RESTRICTION carry a speed value.
+    if (hud.alertValue >= 0 && (hud.alertCode == 8 || hud.alertCode == 22)) {
+      String value = String(hud.alertValue) + " KM/H";
+      textCentered(value, 233, 124, 80, 1, C_YELLOW);
+      textCentered(formatDistance(hud.alertDistanceM), 233, 143, 80, 1, C_GREY);
+    } else if (hud.alertCode == 6 && hud.alertSeverity > 0) {
+      String jam = "JAM " + String(hud.alertSeverity) + "/5";
+      textCentered(jam, 233, 125, 80, 1, C_YELLOW);
+      if (hud.alertDelayMin >= 0) {
+        textCentered("+" + String(hud.alertDelayMin) + " MIN", 233, 144, 80, 1, C_WHITE);
+      } else {
+        textCentered(formatDistance(hud.alertDistanceM), 233, 144, 80, 1, C_GREY);
+      }
+    } else {
+      textCentered(formatDistance(hud.alertDistanceM), 233, 132, 80, 2, C_YELLOW);
+    }
   } else {
     tft.fillCircle(273, 74, 6, C_GREEN);
     textCentered("ONLINE", 232, 92, 82, 1, C_GREEN);
-    textCentered("NO", 232, 122, 82, 1, C_GREY);
-    textCentered("ALERT", 232, 138, 82, 2, C_WHITE);
+    textCentered("NO ALERT", 232, 132, 82, 1, C_GREY);
   }
 }
 
@@ -701,8 +909,13 @@ void drawHud() {
 
   bool alertDirty =
     first ||
+    hud.alertCode != renderedHud.alertCode ||
     hud.alert != renderedHud.alert ||
     hud.alertDistanceM != renderedHud.alertDistanceM ||
+    hud.alertValue != renderedHud.alertValue ||
+    hud.alertSeverity != renderedHud.alertSeverity ||
+    hud.alertDelayMin != renderedHud.alertDelayMin ||
+    hud.alertCount != renderedHud.alertCount ||
     linkLost != renderedLinkLost ||
     alertSettingChanged;
 
@@ -732,45 +945,58 @@ void drawWaiting() {
   hudRenderValid = false;
   tft.fillScreen(C_BG);
 
-  // Minimal splash / connection screen.
-  tft.drawRoundRect(18, 24, 284, 192, 14, C_DARK);
-  tft.fillRoundRect(30, 40, 5, 42, 2, C_BLUE);
+  String ip = apMode ? WiFi.softAPIP().toString() :
+              (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "connecting...");
 
-  tft.setTextColor(C_WHITE, C_BG);
+  tft.fillRoundRect(14, 18, 292, 204, 16, C_PANEL);
+  tft.drawRoundRect(14, 18, 292, 204, 16, C_DARK);
+
+  // Brand.
+  tft.fillRoundRect(29, 34, 6, 43, 3, C_BLUE);
+  tft.setTextColor(C_WHITE, C_PANEL);
   tft.setTextSize(3);
-  tft.setCursor(48, 43);
+  tft.setCursor(48, 37);
   tft.print("WAZE HUD");
 
-  tft.setTextColor(C_GREY, C_BG);
+  tft.setTextColor(C_GREY, C_PANEL);
   tft.setTextSize(1);
-  tft.setCursor(50, 73);
-  tft.print("ESP32  /  ILI9341");
+  tft.setCursor(50, 68);
+  tft.print("v");
+  tft.print(FW_VERSION);
 
-  tft.fillCircle(50, 112, 6, bleConnected ? C_GREEN : C_YELLOW);
-  tft.setTextColor(C_WHITE, C_BG);
-  tft.setTextSize(2);
-  tft.setCursor(68, 104);
-  tft.print(bleConnected ? "BLE CONNECTED" : "WAITING BLE");
-
-  tft.setTextColor(C_GREY, C_BG);
+  // BLE status.
+  tft.fillCircle(42, 105, 5, bleConnected ? C_GREEN : C_YELLOW);
+  tft.setTextColor(C_WHITE, C_PANEL);
   tft.setTextSize(1);
-  tft.setCursor(50, 139);
-  tft.print("Device");
+  tft.setCursor(56, 101);
+  tft.print(bleConnected ? "BLE CONNECTED" : "BLE WAITING: WazeHUD");
+
+  // Wi-Fi status and current DHCP/AP IP.
+  bool wifiOk = WiFi.status() == WL_CONNECTED;
+  tft.fillCircle(42, 137, 5, wifiOk ? C_GREEN : (apMode ? C_YELLOW : C_GREY));
+  tft.setTextColor(C_WHITE, C_PANEL);
+  tft.setCursor(56, 133);
+  if (wifiOk) tft.print("WIFI CONNECTED");
+  else if (apMode) tft.print("SETUP AP: WAZE-HUD");
+  else tft.print("WIFI CONNECTING");
+
+  tft.setTextColor(C_GREY, C_PANEL);
+  tft.setCursor(30, 164);
+  tft.print("WEB IP");
+
+  tft.fillRoundRect(85, 153, 201, 29, 7, C_BG);
   tft.setTextColor(C_BLUE, C_BG);
-  tft.setCursor(105, 139);
-  tft.print("WazeHUD");
-
-  String ip = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-  tft.setTextColor(C_GREY, C_BG);
-  tft.setCursor(50, 161);
-  tft.print("Web");
-  tft.setTextColor(C_WHITE, C_BG);
-  tft.setCursor(105, 161);
+  tft.setTextSize(2);
+  tft.setCursor(98, 160);
   tft.print(ip);
 
-  tft.setTextColor(C_GREY, C_BG);
-  tft.setCursor(50, 188);
-  tft.print("Open WazeMod > HUD Link > BLE GATT");
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREY, C_PANEL);
+  tft.setCursor(30, 198);
+  tft.print(apMode ? "Password: 12345678" : "Open IP above for settings / OTA");
+
+  shownIp = ip;
+  wifiUiDirty = false;
 }
 
 class HudBleServerCallbacks : public BLEServerCallbacks {
@@ -1178,6 +1404,8 @@ void setupServer() {
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
     d["wifi"]=WiFi.status()==WL_CONNECTED; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
+    d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
+    d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
 
@@ -1195,30 +1423,43 @@ void connectWiFi() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
     WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+
+    // Show Wi-Fi startup immediately instead of leaving a blank/static screen.
+    drawWaiting();
+
     uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 6000) delay(150);
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+      delay(100);
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
     apMode = false;
+    shownIp = WiFi.localIP().toString();
+    wifiUiDirty = true;
     return;
   }
 
   apMode = true;
   WiFi.mode(WIFI_AP_STA);
   WiFi.softAP(AP_NAME, AP_PASS);
+  shownIp = WiFi.softAPIP().toString();
+  wifiUiDirty = true;
 }
 
 void setup() {
   Serial.begin(115200);
 
   displaySPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI, TFT_CS);
-  tft.begin(20000000);
+  // ILI9341 normally handles 40 MHz SPI on ESP32; this halves large-region
+  // draw time versus the old 20 MHz setting.
+  tft.begin(40000000);
   tft.setRotation(1);
   tft.setTextWrap(false);
   tft.fillScreen(C_BG);
 
   loadAppSettings();
+  drawWaiting();
   connectWiFi();
   setupBLE();
   setupServer();
@@ -1243,6 +1484,17 @@ void loop() {
   }
 
   server.handleClient();
+
+  // Reflect a new DHCP/AP address on the boot/waiting screen.
+  String currentIp = apMode ? WiFi.softAPIP().toString() :
+                     (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "connecting...");
+  if (currentIp != shownIp) {
+    shownIp = currentIp;
+    wifiUiDirty = true;
+  }
+  if (wifiUiDirty && !hud.valid) {
+    drawWaiting();
+  }
 
   // Only checks the LINK LOST transition. drawHud() itself is dirty-region based,
   // so identical 1 Hz HLP heartbeats do not redraw the display.

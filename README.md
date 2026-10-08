@@ -283,3 +283,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Màu nền đen, cyan làm accent, vàng chỉ dùng cho distance/cảnh báo.
 - Waiting screen được làm lại gọn hơn.
 - Vẫn giữ dirty-region rendering để không nháy toàn màn hình.
+
+
+## Firmware v1.3.1 — HLP/1 data fix, alerts, Wi-Fi IP & smoother TFT
+
+- Parse đúng state HLP/1: `trn`, `dst`, `st/st2`, `rm/rkm`, `alr/alrD/alrV/alrS/alrM`.
+- Khai báo `dev.want.fields` đúng chuẩn và opt-in `alrs` để nhận tối đa 4 cảnh báo phía trước.
+- Hỗ trợ mã cảnh báo HLP/1 0..75, gồm camera, police, traffic jam, roadwork, biển cấm, đèn giao thông và các cảnh báo mở rộng.
+- Alert gần nhất hiển thị đúng label, khoảng cách, giá trị tốc độ hoặc mức ùn tắc/phút chậm khi có.
+- Web `/state` có thêm alert diagnostics.
+- Boot screen hiển thị trạng thái Wi-Fi và IP DHCP/AP mới ngay khi kết nối.
+- TFT SPI tăng từ 20 MHz lên 40 MHz để giảm thời gian redraw.
