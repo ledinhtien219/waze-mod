@@ -1364,8 +1364,6 @@ void drawWaiting() {
   wifiUiDirty = false;
 }
 
-class HudBleServerCallbacks
-
 class HudBleServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *server) override {
     bleConnected = true;
