@@ -315,3 +315,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Background retry dùng `WiFi.reconnect()` mỗi 15 giây.
 - Tắt Arduino auto-reconnect để tránh hai cơ chế reconnect chạy chồng nhau.
 - Serial log thêm Wi-Fi disconnect reason và `/state` có `wifi_disconnect_reason`.
+
+
+## Firmware v1.4.0 — 3 HUD layouts + smooth fonts
+
+- Thêm 3 bố cục chọn trong Web Setting: Balanced, Navigation và Minimal.
+- Lưu bố cục bằng Preferences, reboot vẫn giữ.
+- Chuyển các chữ chính sang FreeSans/FreeSansBold GFX fonts để nét mượt hơn trên ILI9341.
+- Balanced: cân bằng tốc độ, maneuver, alert.
+- Navigation: ưu tiên mũi tên và khoảng cách đến lần rẽ.
+- Minimal: giao diện thoáng, ít khung, tốc độ + maneuver nổi bật.
+- Giữ IP Wi-Fi/AP trên header và toàn bộ HLP alert / NOW / NEXT logic.
