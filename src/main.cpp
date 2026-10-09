@@ -5,10 +5,7 @@
 #include <SPI.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
-#include <Fonts/FreeSans9pt7b.h>
-#include <Fonts/FreeSansBold12pt7b.h>
-#include <Fonts/FreeSansBold18pt7b.h>
-#include <Fonts/FreeSansBold24pt7b.h>
+#include <lvgl.h>
 #include <time.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
@@ -37,11 +34,58 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.5.1";
+static const char *FW_VERSION = "1.6.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
 Adafruit_ILI9341 tft(&displaySPI, TFT_DC, TFT_CS, TFT_RST);
+
+// LVGL uses a 16-line partial draw buffer: smooth UI without a full framebuffer.
+static lv_disp_draw_buf_t lvDrawBuf;
+static lv_color_t lvBuf1[320 * 16];
+static lv_disp_drv_t lvDispDrv;
+
+enum LvUiMode : uint8_t { LVUI_NONE, LVUI_BOOT, LVUI_WAITING, LVUI_HUD, LVUI_OTA };
+static LvUiMode lvUiMode = LVUI_NONE;
+
+// Shared canvases keep memory bounded. They are reused by boot/HUD/OTA screens.
+static lv_color_t lvMainCanvasBuf[72 * 72];
+static lv_color_t lvLaneCanvasBuf[140 * 58];
+static lv_color_t lvAlertCanvasBuf[44 * 44];
+
+static lv_obj_t *uiTitle = nullptr;
+static lv_obj_t *uiSpeed = nullptr;
+static lv_obj_t *uiSpeedUnit = nullptr;
+static lv_obj_t *uiLimitCircle = nullptr;
+static lv_obj_t *uiLimitText = nullptr;
+static lv_obj_t *uiManeuverCanvas = nullptr;
+static lv_obj_t *uiDistance = nullptr;
+static lv_obj_t *uiEtaCaption = nullptr;
+static lv_obj_t *uiEta = nullptr;
+static lv_obj_t *uiLaneCanvas = nullptr;
+static lv_obj_t *uiRoad = nullptr;
+static lv_obj_t *uiAlertCanvas = nullptr;
+static lv_obj_t *uiAlertLabel = nullptr;
+static lv_obj_t *uiAlertDistance = nullptr;
+static lv_obj_t *uiRemainCaption = nullptr;
+static lv_obj_t *uiRemain = nullptr;
+static lv_obj_t *uiNextCaption = nullptr;
+static lv_obj_t *uiNextLimitCircle = nullptr;
+static lv_obj_t *uiNextLimitText = nullptr;
+static lv_obj_t *uiNextDistance = nullptr;
+static lv_obj_t *uiClock = nullptr;
+static lv_obj_t *uiBleDot = nullptr;
+static lv_obj_t *uiWifiBars[4] = {nullptr, nullptr, nullptr, nullptr};
+
+static lv_obj_t *uiBootStage = nullptr;
+static lv_obj_t *uiBootPercent = nullptr;
+static lv_obj_t *uiBootBar = nullptr;
+static lv_obj_t *uiWaitStatus = nullptr;
+static lv_obj_t *uiWaitIp = nullptr;
+static lv_obj_t *uiOtaStage = nullptr;
+static lv_obj_t *uiOtaPercent = nullptr;
+static lv_obj_t *uiOtaBar = nullptr;
+
 WebServer server(80);
 Preferences prefs;
 
@@ -690,6 +734,7 @@ const char* alertLabel(AlertType a) {
   }
 }
 
+
 String currentIpString() {
   if (WiFi.status() == WL_CONNECTED) return WiFi.localIP().toString();
   if (apMode) return WiFi.softAPIP().toString();
@@ -702,827 +747,11 @@ String formatDistance(int m) {
   return String(m / 1000.0f, 1) + " km";
 }
 
-void textCentered(const String &s, int x, int y, int w, uint8_t size, uint16_t color) {
-  tft.setTextSize(size);
-  tft.setTextColor(color, C_BG);
-  int16_t x1, y1;
-  uint16_t tw, th;
-  tft.getTextBounds(s, 0, 0, &x1, &y1, &tw, &th);
-  tft.setCursor(x + max(0, (w - (int)tw) / 2), y);
-  tft.print(s);
-}
-
-void useDefaultFont() {
-  tft.setFont(nullptr);
-  tft.setTextSize(1);
-}
-
-void smoothText(const String &s, int x, int baseline, const GFXfont *font, uint16_t color) {
-  tft.setFont(font);
-  tft.setTextColor(color);
-  tft.setCursor(x, baseline);
-  tft.print(s);
-}
-
-void smoothTextCentered(const String &s, int x, int baseline, int w, const GFXfont *font, uint16_t color) {
-  tft.setFont(font);
-  tft.setTextColor(color);
-  int16_t x1, y1;
-  uint16_t tw, th;
-  tft.getTextBounds(s, 0, baseline, &x1, &y1, &tw, &th);
-  tft.setCursor(x + max(0, (w - (int)tw) / 2), baseline);
-  tft.print(s);
-}
-
-void smoothTextRight(const String &s, int rightX, int baseline, const GFXfont *font, uint16_t color) {
-  tft.setFont(font);
-  tft.setTextColor(color);
-  int16_t x1, y1;
-  uint16_t tw, th;
-  tft.getTextBounds(s, 0, baseline, &x1, &y1, &tw, &th);
-  tft.setCursor(rightX - tw, baseline);
-  tft.print(s);
-}
-
-void drawBrandMark(int cx, int cy, int r) {
-  // Original WazeHUD navigation mark: a road converging into a forward arrow.
-  int x = cx - r;
-  int y = cy - r;
-  int d = r * 2;
-  int radius = max(5, r / 3);
-
-  tft.fillRoundRect(x, y, d, d, radius, C_PANEL);
-  tft.drawRoundRect(x, y, d, d, radius, C_CYAN);
-
-  // Road edges.
-  tft.drawLine(cx - r/2, cy + r/2, cx - r/5, cy - r/3, C_WHITE);
-  tft.drawLine(cx - r/2 + 1, cy + r/2, cx - r/5 + 1, cy - r/3, C_WHITE);
-  tft.drawLine(cx + r/2, cy + r/2, cx + r/5, cy - r/3, C_WHITE);
-  tft.drawLine(cx + r/2 - 1, cy + r/2, cx + r/5 - 1, cy - r/3, C_WHITE);
-
-  // Center lane / forward arrow.
-  int shaftW = max(3, r / 6);
-  tft.fillRect(cx - shaftW/2, cy - r/6, shaftW, r/2, C_CYAN);
-  tft.fillTriangle(cx, cy - r/2,
-                   cx - r/4, cy - r/7,
-                   cx + r/4, cy - r/7, C_CYAN);
-
-  // Small lane dashes create a recognizable road/HUD identity.
-  for (int yy = cy + r/8; yy < cy + r/2; yy += max(5, r/4)) {
-    tft.drawFastVLine(cx, yy, max(2, r/9), C_WHITE);
-  }
-}
-
-void updateBootProgress(uint8_t percent, const String &stage) {
-  percent = constrain((int)percent, 0, 100);
-
-  // Update only the lower status zone to avoid splash flicker.
-  tft.fillRect(0, 159, 320, 61, C_BG);
-  smoothTextCentered(stage, 0, 180, 320, &FreeSans9pt7b,
-                     percent >= 100 ? C_GREEN : C_GREY);
-
-  const int bx = 38, by = 193, bw = 244, bh = 12;
-  tft.fillRoundRect(bx, by, bw, bh, 6, C_DARK);
-  int fill = (bw - 4) * percent / 100;
-  if (fill > 0) {
-    tft.fillRoundRect(bx + 2, by + 2, fill, bh - 4, 4,
-                      percent >= 100 ? C_GREEN : C_CYAN);
-  }
-
-  smoothTextCentered(String(percent) + "%", 0, 220, 320, &FreeSans9pt7b, C_WHITE);
-}
-
-void drawBootSplash() {
-  tft.fillScreen(C_BG);
-
-  // A subtle top accent makes the startup screen feel like a product, not a debug UI.
-  tft.fillRoundRect(92, 24, 136, 2, 1, C_BLUE2);
-  drawBrandMark(160, 70, 30);
-
-  smoothTextCentered("WAZE HUD", 0, 132, 320, &FreeSansBold18pt7b, C_WHITE);
-  smoothTextCentered("SMART NAV DISPLAY", 0, 154, 320, &FreeSans9pt7b, C_GREY);
-
-  smoothText("v" + String(FW_VERSION), 12, 232, &FreeSans9pt7b, C_GREY);
-  smoothTextRight("ESP32", 308, 232, &FreeSans9pt7b, C_GREY);
-
-  updateBootProgress(5, "POWERING UP");
-}
-
-void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
-  percent = constrain((int)percent, 0, 100);
-
-  if (reset || otaRenderedPercent < 0) {
-    tft.fillScreen(C_BG);
-    drawBrandMark(42, 42, 19);
-
-    smoothText("SYSTEM UPDATE", 72, 38, &FreeSansBold12pt7b, C_WHITE);
-    smoothText("v" + String(FW_VERSION) + "  >  v" + latestVersion,
-               72, 60, &FreeSans9pt7b, C_GREY);
-
-    smoothTextCentered("DO NOT POWER OFF", 0, 218, 320, &FreeSans9pt7b, C_YELLOW);
-    otaRenderedPercent = -1;
-    otaRenderedStage = "";
-  }
-
-  if (stage != otaRenderedStage) {
-    tft.fillRect(0, 82, 320, 28, C_BG);
-    smoothTextCentered(stage, 0, 103, 320, &FreeSans9pt7b,
-                       stage == "UPDATE COMPLETE" ? C_GREEN : C_CYAN);
-    otaRenderedStage = stage;
-  }
-
-  if ((int)percent != otaRenderedPercent) {
-    const int bx = 28, by = 132, bw = 264, bh = 18;
-
-    tft.fillRoundRect(bx, by, bw, bh, 8, C_DARK);
-    int fill = (bw - 4) * percent / 100;
-    if (fill > 0) {
-      tft.fillRoundRect(bx + 2, by + 2, fill, bh - 4, 6,
-                        percent >= 100 ? C_GREEN : C_CYAN);
-    }
-
-    tft.fillRect(0, 158, 320, 40, C_BG);
-    smoothTextCentered(String(percent) + "%", 0, 187, 320,
-                       &FreeSansBold18pt7b,
-                       percent >= 100 ? C_GREEN : C_WHITE);
-
-    otaRenderedPercent = percent;
-  }
-}
-
-void drawTriangleSign(int cx, int cy, int r) {
-  int x1 = cx, y1 = cy - r;
-  int x2 = cx - r, y2 = cy + r;
-  int x3 = cx + r, y3 = cy + r;
-  tft.fillTriangle(x1, y1, x2, y2, x3, y3, C_RED);
-  int ir = r - 5;
-  tft.fillTriangle(cx, cy - ir, cx - ir, cy + ir, cx + ir, cy + ir, C_YELLOW);
-}
-
-void drawSpeedLimit(int cx, int cy, int limit) {
-  tft.fillCircle(cx, cy, 29, C_RED);
-  tft.fillCircle(cx, cy, 23, C_WHITE);
-  tft.setTextColor(ILI9341_BLACK, C_WHITE);
-  tft.setTextSize(limit >= 100 ? 2 : 3);
-  String n = limit > 0 ? String(limit) : "--";
-  int16_t x1, y1; uint16_t w, h;
-  tft.getTextBounds(n, 0, 0, &x1, &y1, &w, &h);
-  tft.setCursor(cx - w/2, cy - h/2);
-  tft.print(n);
-}
-
-void drawCameraGlyph(int cx, int cy, uint16_t color) {
-  tft.fillRoundRect(cx - 14, cy - 9, 28, 18, 4, color);
-  tft.fillRect(cx - 8, cy - 13, 10, 5, color);
-  tft.fillCircle(cx, cy, 7, C_BG);
-  tft.fillCircle(cx, cy, 3, color);
-}
-
-void drawAlertBadge(int cx, int cy, uint16_t bg) {
-  tft.fillCircle(cx, cy, 20, bg);
-  tft.drawCircle(cx, cy, 20, C_WHITE);
-}
-
-void drawTinyArrow(int cx, int cy, int dx, int dy, uint16_t color) {
-  int ex = cx + dx, ey = cy + dy;
-  tft.drawLine(cx, cy, ex, ey, color);
-  tft.drawLine(cx + 1, cy, ex + 1, ey, color);
-  if (abs(dx) >= abs(dy)) {
-    int sx = dx >= 0 ? 1 : -1;
-    tft.drawLine(ex, ey, ex - sx * 6, ey - 5, color);
-    tft.drawLine(ex, ey, ex - sx * 6, ey + 5, color);
-  } else {
-    int sy = dy >= 0 ? 1 : -1;
-    tft.drawLine(ex, ey, ex - 5, ey - sy * 6, color);
-    tft.drawLine(ex, ey, ex + 5, ey - sy * 6, color);
-  }
-}
-
-void drawCarTiny(int cx, int cy, uint16_t color) {
-  tft.fillRoundRect(cx - 11, cy - 5, 22, 11, 3, color);
-  tft.fillRect(cx - 7, cy - 9, 14, 5, color);
-  tft.fillCircle(cx - 7, cy + 7, 3, C_BG);
-  tft.fillCircle(cx + 7, cy + 7, 3, C_BG);
-}
-
-void drawMotoTiny(int cx, int cy, uint16_t color) {
-  tft.drawCircle(cx - 8, cy + 7, 4, color);
-  tft.drawCircle(cx + 9, cy + 7, 4, color);
-  tft.drawLine(cx - 5, cy + 4, cx, cy - 3, color);
-  tft.drawLine(cx, cy - 3, cx + 6, cy + 5, color);
-  tft.drawLine(cx - 2, cy + 2, cx + 7, cy + 2, color);
-  tft.fillCircle(cx - 1, cy - 8, 3, color);
-}
-
-void drawNoCircle(int cx, int cy) {
-  tft.fillCircle(cx, cy, 20, C_WHITE);
-  tft.drawCircle(cx, cy, 20, C_RED);
-  tft.drawCircle(cx, cy, 19, C_RED);
-  tft.drawCircle(cx, cy, 18, C_RED);
-}
-
-void drawMandatoryCircle(int cx, int cy) {
-  tft.fillCircle(cx, cy, 20, C_BLUE2);
-  tft.drawCircle(cx, cy, 20, C_WHITE);
-}
-
-void drawCloud(int cx, int cy, uint16_t color) {
-  tft.fillCircle(cx - 8, cy - 3, 6, color);
-  tft.fillCircle(cx, cy - 7, 8, color);
-  tft.fillCircle(cx + 9, cy - 3, 5, color);
-  tft.fillRect(cx - 12, cy - 3, 25, 8, color);
-}
-
-void drawTrafficLightTiny(int cx, int cy, bool broken) {
-  tft.fillRoundRect(cx - 7, cy - 15, 14, 30, 3, C_WHITE);
-  tft.fillCircle(cx, cy - 8, 4, C_RED);
-  tft.fillCircle(cx, cy, 4, C_YELLOW);
-  tft.fillCircle(cx, cy + 8, 4, C_GREEN);
-  if (broken) {
-    tft.drawLine(cx - 14, cy - 14, cx + 14, cy + 14, C_RED);
-    tft.drawLine(cx + 14, cy - 14, cx - 14, cy + 14, C_RED);
-  }
-}
-
-void drawCameraVariant(int cx, int cy, uint8_t code) {
-  drawAlertBadge(cx, cy, C_BLUE2);
-  drawCameraGlyph(cx, cy, C_WHITE);
-  useDefaultFont();
-  tft.setTextColor(C_YELLOW, C_BLUE2);
-  tft.setTextSize(1);
-  const char *mark = "";
-  switch (code) {
-    case 40: mark = "P"; break;   // phone
-    case 41: mark = "D"; break;   // dummy
-    case 42: mark = "B"; break;   // belt
-    case 43: mark = "<>"; break;  // distance
-    case 44: mark = "BUS"; break;
-    case 45: mark = "~"; break;   // noise
-    case 46: mark = "S"; break;   // stop
-    default: break;
-  }
-  if (mark[0]) {
-    int16_t x1,y1; uint16_t w,h;
-    tft.getTextBounds(mark,0,0,&x1,&y1,&w,&h);
-    tft.setCursor(cx - w/2, cy + 15);
-    tft.print(mark);
-  }
-}
-
-void drawRestrictionArrow(uint8_t code, int cx, int cy) {
-  drawNoCircle(cx, cy);
-  uint16_t c = ILI9341_BLACK;
-  if (code == 28 || code == 72) {
-    tft.drawLine(cx + 4, cy + 10, cx + 4, cy - 5, c);
-    drawTinyArrow(cx + 4, cy - 5, -13, -8, c);
-  } else if (code == 29 || code == 73) {
-    tft.drawLine(cx - 4, cy + 10, cx - 4, cy - 5, c);
-    drawTinyArrow(cx - 4, cy - 5, 13, -8, c);
-  } else if (code == 30 || code == 74) {
-    tft.drawLine(cx + 7, cy + 10, cx + 7, cy - 2, c);
-    tft.drawCircle(cx, cy - 2, 9, c);
-    drawTinyArrow(cx - 8, cy - 2, 0, 10, c);
-  } else if (code == 31) {
-    drawTinyArrow(cx, cy + 9, 0, -19, c);
-  } else {
-    // Combined turn restrictions 65..71.
-    drawTinyArrow(cx, cy + 8, 0, -17, c);
-    if (code == 65 || code == 67) drawTinyArrow(cx, cy, code == 65 ? 12 : -12, -9, c);
-    else if (code == 66 || code == 69) drawTinyArrow(cx + 3, cy, -12, 10, c);
-    else if (code == 70 || code == 71) drawTinyArrow(cx - 3, cy, 12, 10, c);
-    else if (code == 68) {
-      drawTinyArrow(cx, cy, -12, -9, c);
-      drawTinyArrow(cx, cy, 12, -9, c);
-    }
-  }
-  tft.drawLine(cx - 13, cy - 13, cx + 13, cy + 13, C_RED);
-  tft.drawLine(cx - 12, cy - 14, cx + 14, cy + 12, C_RED);
-}
-
-void drawWazeAlertIcon(uint8_t code, int cx, int cy) {
-  useDefaultFont();
-  const uint16_t ORANGE = 0xFD20;
-
-  // 0=None
-  if (code == 0) return;
-
-  // 1 Police
-  if (code == 1) {
-    drawAlertBadge(cx, cy, C_BLUE);
-    tft.fillRect(cx - 11, cy - 8, 22, 4, C_WHITE);
-    tft.fillRect(cx - 6, cy - 12, 12, 5, C_WHITE);
-    tft.fillCircle(cx, cy + 1, 6, C_WHITE);
-    tft.fillRect(cx - 9, cy + 7, 18, 7, C_WHITE);
-    return;
-  }
-
-  // 2 Speed camera + 40..46 camera variants.
-  if (code == 2 || (code >= 40 && code <= 46)) {
-    drawCameraVariant(cx, cy, code);
-    return;
-  }
-
-  // 3 Red-light camera.
-  if (code == 3) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawTrafficLightTiny(cx - 3, cy, false);
-    tft.fillRect(cx + 9, cy - 5, 7, 10, C_WHITE);
-    tft.fillCircle(cx + 12, cy, 2, C_BG);
-    return;
-  }
-
-  // 4 generic hazard / 18 dangerous road / 39 combined restriction.
-  if (code == 4 || code == 18 || code == 39) {
-    drawTriangleSign(cx, cy, 20);
-    tft.setTextColor(C_DARK, C_YELLOW);
-    tft.setTextSize(2);
-    tft.setCursor(cx - 3, cy - 6);
-    tft.print("!");
-    return;
-  }
-
-  // 5 Accident.
-  if (code == 5) {
-    drawAlertBadge(cx, cy, C_RED);
-    drawCarTiny(cx - 7, cy + 3, C_WHITE);
-    drawCarTiny(cx + 8, cy - 3, C_YELLOW);
-    tft.drawLine(cx - 2, cy - 11, cx + 3, cy - 5, C_WHITE);
-    tft.drawLine(cx + 3, cy - 11, cx - 2, cy - 5, C_WHITE);
-    return;
-  }
-
-  // 6 Traffic jam - severity bars.
-  if (code == 6) {
-    drawAlertBadge(cx, cy, ORANGE);
-    for (int i=0;i<3;i++) {
-      tft.fillRoundRect(cx - 12, cy - 11 + i*10, 24, 6, 2, C_WHITE);
-    }
-    int bars = constrain((int)hud.alertSeverity, 1, 5);
-    for (int i=0;i<5;i++) {
-      tft.fillRect(cx - 14 + i*6, cy + 14, 4, 3, i < bars ? C_RED : C_DARK);
-    }
-    return;
-  }
-
-  // 7 closed road / 38 prohibited road.
-  if (code == 7 || code == 38) {
-    drawNoCircle(cx, cy);
-    tft.fillRoundRect(cx - 13, cy - 4, 26, 8, 3, C_RED);
-    if (code == 7) {
-      tft.drawFastVLine(cx - 8, cy - 11, 22, ILI9341_BLACK);
-      tft.drawFastVLine(cx + 8, cy - 11, 22, ILI9341_BLACK);
-    }
-    return;
-  }
-
-  // 8 speed drop / 22 end speed restriction.
-  if (code == 8 || code == 22) {
-    if (hud.alertValue > 0) {
-      drawMiniSpeedLimit(cx, cy, hud.alertValue, 20);
-      if (code == 22) {
-        tft.drawLine(cx - 14, cy + 14, cx + 14, cy - 14, C_GREY);
-        tft.drawLine(cx - 10, cy + 17, cx + 17, cy - 10, C_GREY);
-      }
-    } else {
-      drawNoCircle(cx, cy);
-    }
-    return;
-  }
-
-  // 9 no passing / 10 end no passing.
-  if (code == 9 || code == 10) {
-    drawNoCircle(cx, cy);
-    tft.fillCircle(cx - 6, cy, 5, ILI9341_BLACK);
-    tft.fillCircle(cx + 6, cy, 5, C_RED);
-    if (code == 10) {
-      tft.drawLine(cx - 14, cy + 14, cx + 14, cy - 14, C_GREY);
-    }
-    return;
-  }
-
-  // 11 railway.
-  if (code == 11) {
-    drawAlertBadge(cx, cy, C_YELLOW);
-    tft.drawLine(cx - 12, cy - 12, cx + 12, cy + 12, C_DARK);
-    tft.drawLine(cx + 12, cy - 12, cx - 12, cy + 12, C_DARK);
-    tft.drawFastHLine(cx - 15, cy + 12, 30, C_DARK);
-    return;
-  }
-
-  // 12 toll booth.
-  if (code == 12) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.fillRect(cx - 13, cy - 8, 26, 5, C_WHITE);
-    tft.fillRect(cx - 11, cy - 3, 5, 15, C_WHITE);
-    tft.fillRect(cx + 6, cy - 3, 5, 15, C_WHITE);
-    tft.fillRect(cx - 2, cy - 3, 4, 9, C_YELLOW);
-    return;
-  }
-
-  // 13 stopped vehicle.
-  if (code == 13) {
-    drawAlertBadge(cx, cy, ORANGE);
-    drawCarTiny(cx - 2, cy + 2, C_WHITE);
-    tft.drawFastVLine(cx + 13, cy - 13, 27, C_WHITE);
-    return;
-  }
-
-  // 14 construction.
-  if (code == 14) {
-    drawTriangleSign(cx, cy, 20);
-    tft.fillCircle(cx - 2, cy - 5, 3, C_DARK);
-    tft.drawLine(cx, cy - 1, cx - 6, cy + 11, C_DARK);
-    tft.drawLine(cx, cy - 1, cx + 8, cy + 9, C_DARK);
-    tft.drawLine(cx - 5, cy + 2, cx + 10, cy - 1, C_DARK);
-    return;
-  }
-
-  // 15 pothole.
-  if (code == 15) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.drawFastHLine(cx - 14, cy - 7, 28, C_WHITE);
-    tft.drawLine(cx - 13, cy - 6, cx - 7, cy + 8, C_WHITE);
-    tft.drawLine(cx - 7, cy + 8, cx, cy + 2, C_WHITE);
-    tft.drawLine(cx, cy + 2, cx + 8, cy + 9, C_WHITE);
-    tft.drawLine(cx + 8, cy + 9, cx + 14, cy - 6, C_WHITE);
-    return;
-  }
-
-  // 16 weather.
-  if (code == 16) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawCloud(cx, cy - 4, C_WHITE);
-    tft.drawLine(cx - 8, cy + 8, cx - 11, cy + 14, C_BLUE);
-    tft.drawLine(cx, cy + 8, cx - 3, cy + 14, C_BLUE);
-    tft.drawLine(cx + 8, cy + 8, cx + 5, cy + 14, C_BLUE);
-    return;
-  }
-
-  // 17 blocked lane.
-  if (code == 17) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.drawFastVLine(cx - 10, cy - 13, 27, C_WHITE);
-    tft.drawFastVLine(cx + 10, cy - 13, 27, C_WHITE);
-    tft.drawLine(cx - 6, cy - 6, cx + 6, cy + 6, C_RED);
-    tft.drawLine(cx + 6, cy - 6, cx - 6, cy + 6, C_RED);
-    return;
-  }
-
-  // 19 expressway exit.
-  if (code == 19) {
-    drawAlertBadge(cx, cy, C_GREEN);
-    drawTinyArrow(cx - 4, cy + 10, 0, -20, C_WHITE);
-    drawTinyArrow(cx, cy, 13, -12, C_WHITE);
-    return;
-  }
-
-  // 20 expressway rest / 21 rest stop.
-  if (code == 20 || code == 21) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.setTextColor(C_WHITE, C_BLUE2);
-    tft.setTextSize(2);
-    tft.setCursor(cx - 6, cy - 7);
-    tft.print(code == 20 ? "P" : "R");
-    return;
-  }
-
-  // 23 residential start / 24 residential end.
-  if (code == 23 || code == 24) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.fillTriangle(cx, cy - 13, cx - 13, cy - 1, cx + 13, cy - 1, C_WHITE);
-    tft.fillRect(cx - 9, cy - 1, 18, 13, C_WHITE);
-    tft.fillRect(cx - 3, cy + 5, 6, 7, C_BG);
-    if (code == 24) tft.drawLine(cx - 14, cy + 14, cx + 14, cy - 14, C_RED);
-    return;
-  }
-
-  // 25 end all prohibitions.
-  if (code == 25) {
-    drawNoCircle(cx, cy);
-    for (int k=-10;k<=10;k+=7) tft.drawLine(cx+k-7, cy+15, cx+k+15, cy-7, C_GREY);
-    return;
-  }
-
-  // 26 no car.
-  if (code == 26) {
-    drawNoCircle(cx, cy);
-    drawCarTiny(cx, cy, ILI9341_BLACK);
-    tft.drawLine(cx - 14, cy - 14, cx + 14, cy + 14, C_RED);
-    return;
-  }
-
-  // 27 no motorcycle.
-  if (code == 27) {
-    drawNoCircle(cx, cy);
-    drawMotoTiny(cx, cy - 2, ILI9341_BLACK);
-    tft.drawLine(cx - 14, cy - 14, cx + 14, cy + 14, C_RED);
-    return;
-  }
-
-  // 28..31 turn prohibitions, 65..74 combined/car restrictions.
-  if ((code >= 28 && code <= 31) || (code >= 65 && code <= 74)) {
-    drawRestrictionArrow(code, cx, cy);
-    if (code >= 69 && code <= 74) {
-      drawCarTiny(cx, cy + 10, ILI9341_BLACK);
-    }
-    return;
-  }
-
-  // 32 mandatory straight / 33 right / 34 left.
-  if (code >= 32 && code <= 34) {
-    drawMandatoryCircle(cx, cy);
-    if (code == 32) drawTinyArrow(cx, cy + 10, 0, -20, C_WHITE);
-    if (code == 33) drawTinyArrow(cx - 7, cy + 7, 14, -14, C_WHITE);
-    if (code == 34) drawTinyArrow(cx + 7, cy + 7, -14, -14, C_WHITE);
-    return;
-  }
-
-  // 35 car lane / 36 motorcycle lane.
-  if (code == 35 || code == 36) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    if (code == 35) drawCarTiny(cx, cy, C_WHITE);
-    else drawMotoTiny(cx, cy - 2, C_WHITE);
-    tft.drawFastVLine(cx - 17, cy - 15, 30, C_WHITE);
-    tft.drawFastVLine(cx + 17, cy - 15, 30, C_WHITE);
-    return;
-  }
-
-  // 37 one way.
-  if (code == 37) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawTinyArrow(cx - 12, cy, 24, 0, C_WHITE);
-    return;
-  }
-
-  // 47 animal.
-  if (code == 47) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.fillCircle(cx - 6, cy, 5, C_WHITE);
-    tft.fillCircle(cx + 5, cy + 1, 5, C_WHITE);
-    tft.fillRect(cx - 7, cy, 13, 8, C_WHITE);
-    tft.fillTriangle(cx - 9, cy - 4, cx - 4, cy - 13, cx - 1, cy - 3, C_WHITE);
-    tft.fillTriangle(cx + 9, cy - 4, cx + 4, cy - 13, cx + 1, cy - 3, C_WHITE);
-    return;
-  }
-
-  // 48 object on road.
-  if (code == 48) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.fillRect(cx - 10, cy - 10, 20, 20, C_WHITE);
-    tft.drawLine(cx - 10, cy - 10, cx + 10, cy + 10, C_DARK);
-    tft.drawLine(cx + 10, cy - 10, cx - 10, cy + 10, C_DARK);
-    return;
-  }
-
-  // 49 roadkill.
-  if (code == 49) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.drawLine(cx - 12, cy - 9, cx + 12, cy + 9, C_WHITE);
-    tft.drawLine(cx + 12, cy - 9, cx - 12, cy + 9, C_WHITE);
-    tft.fillCircle(cx, cy, 4, C_WHITE);
-    return;
-  }
-
-  // 50 flood.
-  if (code == 50) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    for (int y=-7;y<=9;y+=8) {
-      tft.drawLine(cx-14,cy+y,cx-7,cy+y-2,C_WHITE);
-      tft.drawLine(cx-7,cy+y-2,cx,cy+y,C_WHITE);
-      tft.drawLine(cx,cy+y,cx+7,cy+y-2,C_WHITE);
-      tft.drawLine(cx+7,cy+y-2,cx+14,cy+y,C_WHITE);
-    }
-    return;
-  }
-
-  // 51 fog.
-  if (code == 51) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawCloud(cx, cy - 8, C_WHITE);
-    for (int y=3;y<=13;y+=5) tft.drawFastHLine(cx-14,cy+y,28,C_GREY);
-    return;
-  }
-
-  // 52 hail.
-  if (code == 52) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawCloud(cx, cy - 8, C_WHITE);
-    for (int x=-9;x<=9;x+=9) tft.fillCircle(cx+x,cy+10,2,C_WHITE);
-    return;
-  }
-
-  // 53 snow / 54 ice.
-  if (code == 53 || code == 54) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    for (int a=-12;a<=12;a+=24) {
-      tft.drawLine(cx+a,cy,cx-a,cy,C_WHITE);
-      tft.drawLine(cx,cy+a,cx,cy-a,C_WHITE);
-    }
-    tft.drawLine(cx-9,cy-9,cx+9,cy+9,C_WHITE);
-    tft.drawLine(cx+9,cy-9,cx-9,cy+9,C_WHITE);
-    if (code == 54) tft.drawFastHLine(cx-14,cy+14,28,C_BLUE);
-    return;
-  }
-
-  // 55 slippery.
-  if (code == 55) {
-    drawAlertBadge(cx, cy, ORANGE);
-    drawCarTiny(cx, cy - 5, C_WHITE);
-    tft.drawLine(cx-12,cy+10,cx-4,cy+14,C_WHITE);
-    tft.drawLine(cx+2,cy+10,cx+10,cy+14,C_WHITE);
-    return;
-  }
-
-  // 56 speed bump.
-  if (code == 56) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.drawFastHLine(cx - 15, cy + 9, 30, C_WHITE);
-    tft.drawCircle(cx, cy + 8, 13, C_WHITE);
-    tft.fillRect(cx - 15, cy - 7, 30, 16, ORANGE);
-    return;
-  }
-
-  // 57 school.
-  if (code == 57) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.fillCircle(cx - 5, cy - 8, 3, C_WHITE);
-    tft.fillCircle(cx + 5, cy - 6, 3, C_WHITE);
-    tft.drawLine(cx - 5, cy - 4, cx - 8, cy + 10, C_WHITE);
-    tft.drawLine(cx + 5, cy - 2, cx + 8, cy + 10, C_WHITE);
-    tft.drawLine(cx - 5, cy + 1, cx + 4, cy + 7, C_WHITE);
-    return;
-  }
-
-  // 58 merging lanes.
-  if (code == 58) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    drawTinyArrow(cx - 8, cy + 12, 8, -22, C_WHITE);
-    tft.drawLine(cx + 13, cy + 12, cx + 2, cy - 5, C_WHITE);
-    return;
-  }
-
-  // 59 dangerous curve.
-  if (code == 59) {
-    drawAlertBadge(cx, cy, ORANGE);
-    tft.drawLine(cx - 9, cy + 13, cx - 9, cy + 4, C_WHITE);
-    tft.drawLine(cx - 9, cy + 4, cx + 7, cy - 10, C_WHITE);
-    drawTinyArrow(cx + 7, cy - 10, 6, -6, C_WHITE);
-    return;
-  }
-
-  // 60 fork.
-  if (code == 60) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.drawLine(cx,cy+13,cx,cy-3,C_WHITE);
-    drawTinyArrow(cx,cy-3,-11,-11,C_WHITE);
-    drawTinyArrow(cx,cy-3,11,-11,C_WHITE);
-    return;
-  }
-
-  // 61 broken light / 75 traffic light.
-  if (code == 61 || code == 75) {
-    drawAlertBadge(cx, cy, C_DARK);
-    drawTrafficLightTiny(cx, cy, code == 61);
-    return;
-  }
-
-  // 62 cyclist.
-  if (code == 62) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.drawCircle(cx-9,cy+7,5,C_WHITE);
-    tft.drawCircle(cx+10,cy+7,5,C_WHITE);
-    tft.fillCircle(cx,cy-9,3,C_WHITE);
-    tft.drawLine(cx,cy-5,cx-5,cy+4,C_WHITE);
-    tft.drawLine(cx-5,cy+4,cx+4,cy+4,C_WHITE);
-    tft.drawLine(cx+4,cy+4,cx+10,cy+7,C_WHITE);
-    return;
-  }
-
-  // 63 emergency vehicle.
-  if (code == 63) {
-    drawAlertBadge(cx, cy, C_RED);
-    drawCarTiny(cx, cy + 3, C_WHITE);
-    tft.fillRect(cx - 5, cy - 12, 10, 4, C_BLUE);
-    tft.drawFastVLine(cx, cy - 10, 8, C_WHITE);
-    tft.drawFastHLine(cx - 4, cy - 6, 8, C_WHITE);
-    return;
-  }
-
-  // 64 personal safety.
-  if (code == 64) {
-    drawAlertBadge(cx, cy, C_BLUE2);
-    tft.fillTriangle(cx,cy-14,cx-12,cy-8,cx+12,cy-8,C_WHITE);
-    tft.fillTriangle(cx-12,cy-8,cx+12,cy-8,cx,cy+14,C_WHITE);
-    tft.fillCircle(cx,cy-3,4,C_BLUE2);
-    return;
-  }
-
-  // Fallback hazard for any future HLP code.
-  drawTriangleSign(cx, cy, 20);
-  tft.setTextColor(C_DARK, C_YELLOW);
-  tft.setTextSize(2);
-  tft.setCursor(cx - 3, cy - 6);
-  tft.print("!");
-}
-
-void drawArrow(TurnType turn, int cx, int cy) {
-  const uint16_t c = C_BLUE;
-  const int shaft = 9;
-
-  auto thickLine = [&](int x1, int y1, int x2, int y2) {
-    tft.drawLine(x1, y1, x2, y2, c);
-    tft.drawLine(x1 + 1, y1, x2 + 1, y2, c);
-    tft.drawLine(x1 - 1, y1, x2 - 1, y2, c);
-    tft.drawLine(x1, y1 + 1, x2, y2 + 1, c);
-    tft.drawLine(x1, y1 - 1, x2, y2 - 1, c);
-  };
-
-  if (turn == TURN_STRAIGHT) {
-    tft.fillRect(cx - shaft/2, cy - 12, shaft, 34, c);
-    tft.fillTriangle(cx, cy - 34, cx - 15, cy - 12, cx + 15, cy - 12, c);
-    return;
-  }
-
-  if (turn == TURN_LEFT || turn == TURN_RIGHT) {
-    int dir = turn == TURN_RIGHT ? 1 : -1;
-    tft.fillRect(cx - shaft/2, cy - 1, shaft, 24, c);
-    if (dir < 0) tft.fillRect(cx - 27, cy - 1, 28, shaft, c);
-    else         tft.fillRect(cx,      cy - 1, 28, shaft, c);
-    int tip = cx + dir * 34;
-    int base = cx + dir * 20;
-    tft.fillTriangle(tip, cy + 3, base, cy - 8, base, cy + 14, c);
-    return;
-  }
-
-  if (turn == TURN_SLIGHT_LEFT || turn == TURN_SLIGHT_RIGHT ||
-      turn == TURN_KEEP_LEFT || turn == TURN_KEEP_RIGHT ||
-      turn == TURN_EXIT_LEFT || turn == TURN_EXIT_RIGHT) {
-    bool right = (turn == TURN_SLIGHT_RIGHT || turn == TURN_KEEP_RIGHT || turn == TURN_EXIT_RIGHT);
-    int dir = right ? 1 : -1;
-
-    // Short vertical stem and a 45-degree branch.
-    tft.fillRect(cx - 4, cy + 2, 8, 21, c);
-    thickLine(cx, cy + 5, cx + dir * 24, cy - 19);
-    thickLine(cx, cy + 7, cx + dir * 25, cy - 17);
-
-    int tipX = cx + dir * 31;
-    int tipY = cy - 25;
-    int baseX = cx + dir * 19;
-    tft.fillTriangle(tipX, tipY,
-                     baseX, tipY + 3,
-                     tipX - dir * 3, tipY + 12, c);
-
-    // KEEP is shown as a fork; EXIT is shown with a short continuation.
-    if (turn == TURN_KEEP_LEFT || turn == TURN_KEEP_RIGHT) {
-      thickLine(cx, cy + 4, cx, cy - 16);
-    } else if (turn == TURN_EXIT_LEFT || turn == TURN_EXIT_RIGHT) {
-      tft.drawFastVLine(cx, cy - 11, 14, C_GREY);
-    }
-    return;
-  }
-
-  if (turn == TURN_SHARP_LEFT || turn == TURN_SHARP_RIGHT) {
-    int dir = turn == TURN_SHARP_RIGHT ? 1 : -1;
-    tft.fillRect(cx - 4, cy + 1, 8, 22, c);
-    int elbowX = cx + dir * 17;
-    tft.fillRect(dir < 0 ? elbowX : cx, cy - 10, 18, 8, c);
-    thickLine(cx, cy + 4, cx, cy - 7);
-    int tipX = cx + dir * 31;
-    tft.fillTriangle(tipX, cy - 6,
-                     cx + dir * 18, cy - 17,
-                     cx + dir * 18, cy + 5, c);
-    return;
-  }
-
-  if (turn == TURN_UTURN) {
-    tft.fillRect(cx + 8, cy - 1, 8, 25, c);
-    tft.drawCircle(cx, cy - 4, 20, c);
-    tft.drawCircle(cx, cy - 4, 19, c);
-    tft.drawCircle(cx, cy - 4, 18, c);
-    tft.fillRect(cx - 27, cy - 11, 26, 23, C_BG);
-    tft.fillTriangle(cx - 27, cy - 4, cx - 11, cy - 16, cx - 11, cy + 8, c);
-    return;
-  }
-
-  if (turn == TURN_ROUNDABOUT) {
-    tft.drawCircle(cx, cy, 20, c);
-    tft.drawCircle(cx, cy, 19, c);
-    tft.drawCircle(cx, cy, 18, c);
-    tft.fillTriangle(cx + 21, cy - 7, cx + 34, cy, cx + 21, cy + 7, c);
-    return;
-  }
-
-  if (turn == TURN_ARRIVE) {
-    tft.fillRect(cx - 4, cy - 24, 8, 30, c);
-    tft.fillTriangle(cx, cy - 35, cx - 14, cy - 17, cx + 14, cy - 17, c);
-    tft.fillCircle(cx, cy + 18, 8, C_GREEN);
-    tft.fillCircle(cx, cy + 18, 3, C_BG);
-    return;
-  }
-
-  // Defensive fallback.
-  tft.fillRect(cx - 4, cy - 12, 8, 34, c);
-  tft.fillTriangle(cx, cy - 34, cx - 15, cy - 12, cx + 15, cy - 12, c);
+String compactDistance(int m) {
+  if (m < 0) return "";
+  if (m < 1000) return String(m) + "m";
+  if (m < 10000) return String(m / 1000.0f, 1) + "km";
+  return String(m / 1000) + "km";
 }
 
 const char* maneuverInstruction(TurnType turn) {
@@ -1564,574 +793,667 @@ bool turnIsRight(TurnType t) {
          t == TURN_KEEP_RIGHT || t == TURN_EXIT_RIGHT;
 }
 
-void drawCompactLaneArrow(TurnType turn, int cx, int cy, uint16_t color, bool active) {
-  int thick = active ? 6 : 4;
+// ---------- LVGL display bridge ----------
+static inline lv_color_t lc(uint32_t rgb) {
+  return lv_color_hex(rgb);
+}
 
-  auto vbar = [&](int x, int y, int h) {
-    tft.fillRect(x - thick/2, y, thick, h, color);
+void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colorP) {
+  uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
+  uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
+
+  tft.startWrite();
+  tft.setAddrWindow(area->x1, area->y1, w, h);
+  tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
+  tft.endWrite();
+
+  lv_disp_flush_ready(disp);
+}
+
+void lvUiInit() {
+  lv_init();
+
+  lv_disp_draw_buf_init(&lvDrawBuf, lvBuf1, nullptr, 320 * 16);
+  lv_disp_drv_init(&lvDispDrv);
+  lvDispDrv.hor_res = 320;
+  lvDispDrv.ver_res = 240;
+  lvDispDrv.flush_cb = lvDisplayFlush;
+  lvDispDrv.draw_buf = &lvDrawBuf;
+  lvDispDrv.antialiasing = 1;
+  lv_disp_drv_register(&lvDispDrv);
+
+  lv_obj_set_style_bg_color(lv_scr_act(), lc(0x050B16), 0);
+  lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
+  lv_obj_clear_flag(lv_scr_act(), LV_OBJ_FLAG_SCROLLABLE);
+}
+
+void lvUiPump() {
+  lv_timer_handler();
+}
+
+void lvUiClear(LvUiMode mode) {
+  lv_obj_clean(lv_scr_act());
+  lv_obj_set_style_bg_color(lv_scr_act(), lc(0x050B16), 0);
+  lv_obj_set_style_bg_opa(lv_scr_act(), LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(lv_scr_act(), 0, 0);
+  lv_obj_clear_flag(lv_scr_act(), LV_OBJ_FLAG_SCROLLABLE);
+  lvUiMode = mode;
+
+  uiTitle = uiSpeed = uiSpeedUnit = nullptr;
+  uiLimitCircle = uiLimitText = nullptr;
+  uiManeuverCanvas = uiDistance = nullptr;
+  uiEtaCaption = uiEta = nullptr;
+  uiLaneCanvas = uiRoad = nullptr;
+  uiAlertCanvas = uiAlertLabel = uiAlertDistance = nullptr;
+  uiRemainCaption = uiRemain = nullptr;
+  uiNextCaption = uiNextLimitCircle = uiNextLimitText = uiNextDistance = nullptr;
+  uiClock = uiBleDot = nullptr;
+  for (int i = 0; i < 4; ++i) uiWifiBars[i] = nullptr;
+
+  uiBootStage = uiBootPercent = uiBootBar = nullptr;
+  uiWaitStatus = uiWaitIp = nullptr;
+  uiOtaStage = uiOtaPercent = uiOtaBar = nullptr;
+}
+
+lv_obj_t* makeLabel(lv_obj_t *parent, int x, int y, int w, int h,
+                    const lv_font_t *font, lv_color_t color,
+                    lv_text_align_t align = LV_TEXT_ALIGN_LEFT) {
+  lv_obj_t *o = lv_label_create(parent);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_text_font(o, font, 0);
+  lv_obj_set_style_text_color(o, color, 0);
+  lv_obj_set_style_text_align(o, align, 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
+  lv_label_set_long_mode(o, LV_LABEL_LONG_CLIP);
+  return o;
+}
+
+lv_obj_t* makeLineRect(lv_obj_t *parent, int x, int y, int w, int h, lv_color_t color) {
+  lv_obj_t *o = lv_obj_create(parent);
+  lv_obj_remove_style_all(o);
+  lv_obj_set_pos(o, x, y);
+  lv_obj_set_size(o, w, h);
+  lv_obj_set_style_bg_color(o, color, 0);
+  lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+  return o;
+}
+
+void canvasLine(lv_obj_t *canvas, int x1, int y1, int x2, int y2,
+                lv_color_t color, uint8_t width) {
+  lv_draw_line_dsc_t d;
+  lv_draw_line_dsc_init(&d);
+  d.color = color;
+  d.width = width;
+  d.round_start = 1;
+  d.round_end = 1;
+  lv_point_t p[2] = {{(lv_coord_t)x1,(lv_coord_t)y1},{(lv_coord_t)x2,(lv_coord_t)y2}};
+  lv_canvas_draw_line(canvas, p, 2, &d);
+}
+
+void canvasCircle(lv_obj_t *canvas, int cx, int cy, int r,
+                  lv_color_t color, uint8_t width) {
+  lv_draw_arc_dsc_t d;
+  lv_draw_arc_dsc_init(&d);
+  d.color = color;
+  d.width = width;
+  d.rounded = 1;
+  lv_canvas_draw_arc(canvas, cx, cy, r, 0, 360, &d);
+}
+
+void canvasRect(lv_obj_t *canvas, int x, int y, int w, int h,
+                lv_color_t bg, lv_color_t border, uint8_t borderW, uint8_t radius) {
+  lv_draw_rect_dsc_t d;
+  lv_draw_rect_dsc_init(&d);
+  d.bg_color = bg;
+  d.bg_opa = LV_OPA_COVER;
+  d.border_color = border;
+  d.border_width = borderW;
+  d.radius = radius;
+  lv_canvas_draw_rect(canvas, x, y, w, h, &d);
+}
+
+void drawBrandOnCanvas(lv_obj_t *canvas, int w, int h) {
+  lv_canvas_fill_bg(canvas, lc(0x050B16), LV_OPA_COVER);
+  int cx = w / 2;
+  int cy = h / 2;
+
+  canvasRect(canvas, 5, 5, w - 10, h - 10, lc(0x0B1622), lc(0x14D9FF), 2, 14);
+  canvasLine(canvas, cx - 17, cy + 17, cx - 7, cy - 12, lc(0xF4F8FF), 3);
+  canvasLine(canvas, cx + 17, cy + 17, cx + 7, cy - 12, lc(0xF4F8FF), 3);
+  canvasLine(canvas, cx, cy + 15, cx, cy - 10, lc(0x29D9FF), 6);
+  canvasLine(canvas, cx, cy - 12, cx - 9, cy - 2, lc(0x29D9FF), 5);
+  canvasLine(canvas, cx, cy - 12, cx + 9, cy - 2, lc(0x29D9FF), 5);
+}
+
+void drawTurnOnCanvas(lv_obj_t *canvas, TurnType turn, bool small = false) {
+  int w = small ? 34 : 72;
+  int h = small ? 48 : 72;
+  lv_canvas_fill_bg(canvas, lc(0x050B16), LV_OPA_COVER);
+
+  lv_color_t glow = lc(0x083D66);
+  lv_color_t cyan = lc(0x38DFFF);
+  int cx = w / 2;
+  int bottom = h - 9;
+  int top = 10;
+  uint8_t wide = small ? 5 : 10;
+  uint8_t crisp = small ? 3 : 6;
+
+  auto line2 = [&](int x1,int y1,int x2,int y2) {
+    canvasLine(canvas, x1,y1,x2,y2,glow,wide);
+    canvasLine(canvas, x1,y1,x2,y2,cyan,crisp);
+  };
+  auto arrowHead = [&](int tx,int ty,int bx1,int by1,int bx2,int by2) {
+    line2(tx,ty,bx1,by1);
+    line2(tx,ty,bx2,by2);
   };
 
   if (turn == TURN_STRAIGHT || turn == TURN_ARRIVE) {
-    vbar(cx, cy - 2, 26);
-    int hw = active ? 9 : 7;
-    tft.fillTriangle(cx, cy - 17, cx - hw, cy - 1, cx + hw, cy - 1, color);
+    line2(cx,bottom,cx,top+10);
+    arrowHead(cx,top,cx-9,top+11,cx+9,top+11);
     return;
   }
 
-  if (turnIsLeft(turn) && turn != TURN_UTURN) {
-    vbar(cx + 5, cy + 1, 22);
-    tft.fillRect(cx - 13, cy + 1, 20, thick, color);
-    tft.fillTriangle(cx - 19, cy + 3, cx - 8, cy - 6, cx - 8, cy + 12, color);
+  if (turn == TURN_LEFT || turn == TURN_RIGHT ||
+      turn == TURN_SHARP_LEFT || turn == TURN_SHARP_RIGHT) {
+    int dir = (turn == TURN_RIGHT || turn == TURN_SHARP_RIGHT) ? 1 : -1;
+    int elbowY = small ? 25 : 36;
+    int tipX = cx + dir * (small ? 13 : 25);
+    line2(cx,bottom,cx,elbowY);
+    line2(cx,elbowY,tipX,elbowY);
+    arrowHead(tipX,elbowY,tipX-dir*8,elbowY-8,tipX-dir*8,elbowY+8);
     return;
   }
 
-  if (turnIsRight(turn)) {
-    vbar(cx - 5, cy + 1, 22);
-    tft.fillRect(cx - 5, cy + 1, 20, thick, color);
-    tft.fillTriangle(cx + 20, cy + 3, cx + 9, cy - 6, cx + 9, cy + 12, color);
+  if (turn == TURN_SLIGHT_LEFT || turn == TURN_SLIGHT_RIGHT ||
+      turn == TURN_KEEP_LEFT || turn == TURN_KEEP_RIGHT ||
+      turn == TURN_EXIT_LEFT || turn == TURN_EXIT_RIGHT) {
+    int dir = (turn == TURN_SLIGHT_RIGHT || turn == TURN_KEEP_RIGHT || turn == TURN_EXIT_RIGHT) ? 1 : -1;
+    int tipX = cx + dir * (small ? 13 : 23);
+    int tipY = top + 3;
+    line2(cx,bottom,cx,bottom-18);
+    line2(cx,bottom-18,tipX,tipY);
+    arrowHead(tipX,tipY,tipX-dir*8,tipY+2,tipX-dir*2,tipY+9);
     return;
   }
 
   if (turn == TURN_UTURN) {
-    tft.drawCircle(cx, cy + 2, 10, color);
-    tft.drawCircle(cx, cy + 2, 9, color);
-    vbar(cx + 9, cy + 1, 22);
-    tft.fillTriangle(cx - 15, cy + 2, cx - 5, cy - 6, cx - 5, cy + 10, color);
+    int r = small ? 9 : 16;
+    int ccy = small ? 24 : 34;
+    canvasCircle(canvas, cx, ccy, r, glow, wide);
+    canvasCircle(canvas, cx, ccy, r, cyan, crisp);
+    line2(cx+r,bottom,cx+r,ccy);
+    int tx = cx-r-2;
+    arrowHead(tx,ccy,tx+7,ccy-7,tx+7,ccy+7);
     return;
   }
 
   if (turn == TURN_ROUNDABOUT) {
-    tft.drawCircle(cx, cy + 3, 11, color);
-    tft.drawCircle(cx, cy + 3, 10, color);
-    tft.fillTriangle(cx + 12, cy - 5, cx + 20, cy + 3, cx + 11, cy + 5, color);
+    int r = small ? 10 : 18;
+    canvasCircle(canvas, cx, h/2, r, glow, wide);
+    canvasCircle(canvas, cx, h/2, r, cyan, crisp);
+    int tx = cx+r+5, ty = h/2;
+    arrowHead(tx,ty,tx-7,ty-7,tx-7,ty+7);
     return;
   }
 
-  // Fallback.
-  vbar(cx, cy - 2, 26);
-  tft.fillTriangle(cx, cy - 17, cx - 8, cy - 1, cx + 8, cy - 1, color);
+  line2(cx,bottom,cx,top+10);
+  arrowHead(cx,top,cx-9,top+11,cx+9,top+11);
 }
 
-void drawLaneGuidance() {
-  // Full HUD lane strip: active route is bright cyan; alternatives are heavily dimmed.
-  tft.fillRect(96, 146, 146, 70, C_BG);
+void drawLaneOnCanvas() {
+  lv_canvas_fill_bg(uiLaneCanvas, lc(0x050B16), LV_OPA_COVER);
 
   TurnType lanes[4] = {TURN_STRAIGHT, TURN_STRAIGHT, TURN_STRAIGHT, TURN_RIGHT};
-  int activeIndex = 1;
-
+  int active = 1;
   if (turnIsLeft(hud.turn)) {
     lanes[0] = hud.turn;
-    lanes[1] = TURN_STRAIGHT;
-    lanes[2] = TURN_STRAIGHT;
-    lanes[3] = TURN_RIGHT;
-    activeIndex = 0;
+    active = 0;
   } else if (turnIsRight(hud.turn)) {
-    lanes[0] = TURN_STRAIGHT;
-    lanes[1] = TURN_STRAIGHT;
-    lanes[2] = TURN_STRAIGHT;
     lanes[3] = hud.turn;
-    activeIndex = 3;
-  } else if (hud.turn == TURN_ROUNDABOUT || hud.turn == TURN_ARRIVE) {
-    lanes[1] = hud.turn;
-    activeIndex = 1;
+    active = 3;
   } else {
     lanes[1] = hud.turn;
-    activeIndex = 1;
+    active = 1;
   }
 
-  const int xs[4] = {112, 148, 184, 220};
+  const int laneCx[4] = {16, 52, 88, 124};
+  lv_color_t dim = lc(0x273348);
+  lv_color_t divider = lc(0x1A2838);
+  lv_color_t cyan = lc(0x38DFFF);
+  lv_color_t glow = lc(0x0B5078);
 
-  // Lane separators.
   for (int i = 0; i < 3; ++i) {
-    int x = 130 + i * 36;
-    for (int y = 157; y <= 207; y += 11) {
-      tft.drawFastVLine(x, y, 6, C_LINE_DIM);
-    }
+    int x = 34 + i * 36;
+    for (int y = 7; y < 55; y += 11) canvasLine(uiLaneCanvas, x,y,x,y+5,divider,1);
   }
 
-  // Draw inactive first so active arrow is visually dominant.
-  for (int i = 0; i < 4; ++i) {
-    if (i == activeIndex) continue;
-    drawCompactLaneArrow(lanes[i], xs[i], 177, C_LANE_DIM, false);
-  }
+  auto laneArrow = [&](int idx, TurnType turn, bool on) {
+    int cx = laneCx[idx];
+    int bottom = 51;
+    int top = 7;
+    lv_color_t c = on ? cyan : dim;
+    lv_color_t g = on ? glow : dim;
+    uint8_t w1 = on ? 7 : 4;
+    uint8_t w2 = on ? 4 : 3;
 
-  // Subtle cyan under-glow + crisp active arrow.
-  drawCompactLaneArrow(lanes[activeIndex], xs[activeIndex], 177, C_BLUE2, true);
-  drawCompactLaneArrow(lanes[activeIndex], xs[activeIndex], 176, C_CYAN, true);
-}
+    auto ln = [&](int x1,int y1,int x2,int y2) {
+      canvasLine(uiLaneCanvas,x1,y1,x2,y2,g,w1);
+      canvasLine(uiLaneCanvas,x1,y1,x2,y2,c,w2);
+    };
+    auto head = [&](int tx,int ty,int bx1,int by1,int bx2,int by2) {
+      ln(tx,ty,bx1,by1); ln(tx,ty,bx2,by2);
+    };
 
-void drawSmallStatusIcons() {
-  // BLE indicator.
-  uint16_t bleColor = bleConnected ? C_GREEN : C_LANE_DIM;
-  tft.fillCircle(286, 12, 3, bleColor);
-
-  // Wi-Fi bars.
-  uint16_t wifiColor = WiFi.status() == WL_CONNECTED ? C_GREEN : C_LANE_DIM;
-  for (int i = 0; i < 4; ++i) {
-    int h = 4 + i * 3;
-    tft.fillRect(296 + i * 5, 19 - h, 3, h, wifiColor);
-  }
-}
-
-void drawRouteGlyph(int cx, int cy, uint16_t color) {
-  tft.drawLine(cx - 11, cy + 10, cx - 5, cy - 6, color);
-  tft.drawLine(cx - 5, cy - 6, cx + 2, cy - 11, color);
-  tft.drawLine(cx + 2, cy - 11, cx + 10, cy + 7, color);
-  tft.drawLine(cx - 5, cy + 10, cx, cy - 2, color);
-  tft.drawLine(cx, cy - 2, cx + 6, cy - 6, color);
-  tft.drawLine(cx + 6, cy - 6, cx + 12, cy + 9, color);
-}
-
-void drawStaticFrame() {
-  tft.fillScreen(C_BG);
-
-  if (settings.hudStyle == 0) {
-    tft.drawFastHLine(8, 34, 304, C_DARK);
-    tft.drawRoundRect(6,   44, 88, 146, 10, C_DARK);
-    tft.drawRoundRect(100, 44, 124, 146, 10, C_BLUE2);
-    tft.drawRoundRect(230, 44, 84, 146, 10, C_DARK);
-    tft.drawFastHLine(8, 198, 304, C_DARK);
-  } else if (settings.hudStyle == 1) {
-    tft.drawFastHLine(8, 39, 304, C_DARK);
-    tft.drawRoundRect(6,   48, 78, 142, 10, C_DARK);
-    tft.drawRoundRect(90,  48, 148, 142, 12, C_BLUE2);
-    tft.drawRoundRect(244, 48, 70, 142, 10, C_DARK);
-    tft.drawFastHLine(8, 199, 304, C_DARK);
-  } else if (settings.hudStyle == 2) {
-    tft.drawFastHLine(8, 31, 304, C_DARK);
-    tft.drawFastVLine(103, 39, 153, C_DARK);
-    tft.drawFastVLine(238, 39, 153, C_DARK);
-    tft.drawFastHLine(8, 199, 304, C_DARK);
-  } else {
-    // Final Full HUD: no card clutter, only thin functional separators.
-    tft.drawFastHLine(6, 36, 308, C_LINE_DIM);
-    tft.drawFastHLine(6, 139, 234, C_LINE_DIM);
-    tft.drawFastHLine(6, 216, 308, C_LINE_DIM);
-    tft.drawFastVLine(94, 42, 94, C_LINE_DIM);
-    tft.drawFastVLine(242, 42, 162, C_LINE_DIM);
-    tft.drawFastHLine(246, 108, 70, C_LINE_DIM);
-    tft.drawFastHLine(246, 153, 70, C_LINE_DIM);
-  }
-}
-
-void drawTopPanel() {
-  if (settings.hudStyle == 3) {
-    tft.fillRect(0, 0, 320, 36, C_BG);
-    String title = String(maneuverInstruction(hud.turn));
-    if (title.length() > 22) title = title.substring(0, 22);
-    smoothText(title, 8, 27, &FreeSansBold12pt7b, C_WHITE);
-    drawSmallStatusIcons();
-    return;
-  }
-
-  const int headerH = settings.hudStyle == 1 ? 39 : (settings.hudStyle == 2 ? 31 : 34);
-  tft.fillRect(0, 0, 320, headerH, C_BG);
-
-  String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
-  if (!road.length()) road = "WAZE HUD";
-  if (road.length() > 30) road = road.substring(0, 30);
-
-  if (settings.hudStyle == 0) {
-    tft.fillRoundRect(8, 7, 5, 20, 2, C_BLUE);
-    smoothText(road, 20, 23, &FreeSans9pt7b, C_WHITE);
-  } else if (settings.hudStyle == 1) {
-    smoothText(road, 10, 25, &FreeSans9pt7b, C_WHITE);
-  } else {
-    smoothText(road, 8, 22, &FreeSans9pt7b, C_WHITE);
-  }
-}
-
-void drawMiniSpeedLimit(int cx, int cy, int limit, int radius) {
-  if (limit <= 0) return;
-  tft.fillCircle(cx, cy, radius, C_RED);
-  tft.fillCircle(cx, cy, radius - 3, C_WHITE);
-
-  String n = String(limit);
-  const GFXfont *font = &FreeSans9pt7b;
-  tft.setFont(font);
-  tft.setTextColor(ILI9341_BLACK);
-  int16_t x1, y1;
-  uint16_t w, h;
-  tft.getTextBounds(n, 0, 0, &x1, &y1, &w, &h);
-  int baseline = cy + (int)h / 2 - 1;
-  tft.setCursor(cx - w / 2, baseline);
-  tft.print(n);
-}
-
-String compactDistance(int m) {
-  if (m < 0) return "";
-  if (m < 1000) return String(m) + "m";
-  return String(m / 1000.0f, 1) + "k";
-}
-
-void drawSpeedPanel() {
-  String speed = String(max(0, hud.speed));
-  uint16_t speedColor = hud.overSpeed ? C_RED : C_WHITE;
-
-  if (settings.hudStyle == 3) {
-    // Main speed + current limit, matching the finalized dense HUD mockup.
-    tft.fillRect(95, 38, 146, 99, C_BG);
-
-    // Big current speed.
-    tft.setFont(&FreeSansBold24pt7b);
-    tft.setTextColor(speedColor);
-    int16_t x1,y1; uint16_t w,h;
-    tft.getTextBounds(speed, 0, 0, &x1,&y1,&w,&h);
-    tft.setCursor(151 - w/2, 104);
-    tft.print(speed);
-    smoothTextCentered("km/h", 104, 130, 92, &FreeSans9pt7b, C_GREY);
-
-    // Large current speed limit.
-    if (settings.showSpeedLimit && hud.speedLimit > 0) {
-      int cx = 210, cy = 84, r = 33;
-      tft.fillCircle(cx, cy, r, C_RED);
-      tft.fillCircle(cx, cy, r - 6, C_WHITE);
-      String lim = String(hud.speedLimit);
-      tft.setFont(&FreeSansBold18pt7b);
-      tft.setTextColor(ILI9341_BLACK);
-      tft.getTextBounds(lim,0,0,&x1,&y1,&w,&h);
-      tft.setCursor(cx - w/2, cy + h/2 - 2);
-      tft.print(lim);
-    }
-    return;
-  }
-
-  if (settings.hudStyle == 0) {
-    tft.fillRoundRect(7, 45, 86, 144, 9, C_BG);
-    tft.drawRoundRect(6, 44, 88, 146, 10, hud.overSpeed ? C_RED : C_DARK);
-
-    smoothTextCentered("SPEED", 6, 63, 88, &FreeSans9pt7b, C_GREY);
-    smoothTextCentered(speed, 6, 111, 88, &FreeSansBold18pt7b, speedColor);
-    smoothTextCentered("km/h", 6, 128, 88, &FreeSans9pt7b, C_GREY);
-
-    tft.drawFastVLine(50, 136, 46, C_DARK);
-    smoothTextCentered("NOW", 8, 148, 39, &FreeSans9pt7b, C_WHITE);
-    smoothTextCentered("NEXT", 52, 148, 39, &FreeSans9pt7b, hud.nextSpeedLimit > 0 ? C_BLUE : C_GREY);
-
-    if (settings.showSpeedLimit && hud.speedLimit > 0) drawMiniSpeedLimit(28, 169, hud.speedLimit, 15);
-    else smoothTextCentered("--", 8, 172, 39, &FreeSans9pt7b, C_GREY);
-
-    if (settings.showSpeedLimit && hud.nextSpeedLimit > 0 && hud.nextSpeedLimit != hud.speedLimit) {
-      drawMiniSpeedLimit(72, 169, hud.nextSpeedLimit, 14);
-      String d = compactDistance(hud.nextSpeedDistanceM);
-      if (d.length()) smoothTextCentered(d, 52, 188, 39, &FreeSans9pt7b, C_GREY);
+    if (turnIsLeft(turn) && turn != TURN_UTURN) {
+      ln(cx+4,bottom,cx+4,28);
+      ln(cx+4,28,cx-10,28);
+      head(cx-13,28,cx-6,21,cx-6,35);
+    } else if (turnIsRight(turn)) {
+      ln(cx-4,bottom,cx-4,28);
+      ln(cx-4,28,cx+10,28);
+      head(cx+13,28,cx+6,21,cx+6,35);
+    } else if (turn == TURN_UTURN) {
+      canvasCircle(uiLaneCanvas,cx,27,9,g,w1);
+      canvasCircle(uiLaneCanvas,cx,27,9,c,w2);
+      ln(cx+9,bottom,cx+9,27);
+      head(cx-11,27,cx-4,20,cx-4,34);
     } else {
-      smoothTextCentered("--", 52, 172, 39, &FreeSans9pt7b, C_GREY);
+      ln(cx,bottom,cx,top+10);
+      head(cx,top,cx-7,top+9,cx+7,top+9);
+    }
+  };
+
+  for (int i = 0; i < 4; ++i) if (i != active) laneArrow(i, lanes[i], false);
+  laneArrow(active, lanes[active], true);
+}
+
+void drawAlertOnCanvas() {
+  lv_canvas_fill_bg(uiAlertCanvas, lc(0x050B16), LV_OPA_COVER);
+  uint8_t code = hud.alertCode;
+  if (code == 0 || !alertEnabled(hud.alert)) return;
+
+  lv_color_t white = lc(0xF4F8FF);
+  lv_color_t cyan = lc(0x39DFFF);
+  lv_color_t red = lc(0xFF3B30);
+  lv_color_t yellow = lc(0xFFD54A);
+  lv_color_t blue = lc(0x268DFF);
+  lv_color_t orange = lc(0xFF8A30);
+
+  int cx = 22, cy = 22;
+
+  // Camera family.
+  if (code == 2 || (code >= 40 && code <= 46)) {
+    canvasRect(uiAlertCanvas, 5, 12, 31, 21, blue, white, 2, 5);
+    canvasRect(uiAlertCanvas, 11, 8, 11, 5, blue, white, 1, 2);
+    canvasCircle(uiAlertCanvas, cx, cy+1, 7, white, 2);
+    canvasCircle(uiAlertCanvas, cx, cy+1, 3, cyan, 2);
+    return;
+  }
+
+  // Red-light camera / traffic light.
+  if (code == 3 || code == 75 || code == 61) {
+    canvasRect(uiAlertCanvas, 12, 4, 20, 36, lc(0x18212D), white, 2, 5);
+    canvasCircle(uiAlertCanvas, 22, 12, 4, red, 4);
+    canvasCircle(uiAlertCanvas, 22, 22, 4, yellow, 4);
+    canvasCircle(uiAlertCanvas, 22, 32, 4, lc(0x35E68A), 4);
+    if (code == 61) {
+      canvasLine(uiAlertCanvas, 8,7,36,37,red,3);
+      canvasLine(uiAlertCanvas, 36,7,8,37,red,3);
     }
     return;
   }
 
-  if (settings.hudStyle == 1) {
-    tft.fillRoundRect(7, 49, 76, 140, 9, C_BG);
-    tft.drawRoundRect(6, 48, 78, 142, 10, hud.overSpeed ? C_RED : C_DARK);
-
-    smoothTextCentered("SPEED", 6, 66, 78, &FreeSans9pt7b, C_GREY);
-    smoothTextCentered(speed, 6, 116, 78, &FreeSansBold18pt7b, speedColor);
-    smoothTextCentered("km/h", 6, 134, 78, &FreeSans9pt7b, C_GREY);
-
-    if (settings.showSpeedLimit && hud.speedLimit > 0) {
-      smoothTextCentered("LIMIT", 6, 151, 78, &FreeSans9pt7b, C_GREY);
-      drawMiniSpeedLimit(45, 171, hud.speedLimit, 16);
-    }
+  // Police.
+  if (code == 1) {
+    canvasRect(uiAlertCanvas, 6, 7, 32, 30, blue, white, 2, 12);
+    canvasLine(uiAlertCanvas, 11,14,33,14,white,4);
+    canvasCircle(uiAlertCanvas, 22, 24, 7, white, 2);
+    canvasLine(uiAlertCanvas, 16,34,28,34,white,4);
     return;
   }
 
-  tft.fillRect(0, 32, 102, 166, C_BG);
-  smoothTextCentered("SPEED", 0, 54, 102, &FreeSans9pt7b, C_GREY);
-  smoothTextCentered(speed, 0, 115, 102, &FreeSansBold18pt7b, speedColor);
-  smoothTextCentered("km/h", 0, 134, 102, &FreeSans9pt7b, C_GREY);
-
-  if (settings.showSpeedLimit && hud.speedLimit > 0) {
-    smoothTextCentered("NOW", 0, 157, 51, &FreeSans9pt7b, C_GREY);
-    drawMiniSpeedLimit(28, 179, hud.speedLimit, 15);
+  // Crash.
+  if (code == 5) {
+    canvasRect(uiAlertCanvas, 3, 19, 18, 12, red, white, 1, 4);
+    canvasRect(uiAlertCanvas, 23, 13, 18, 12, orange, white, 1, 4);
+    canvasLine(uiAlertCanvas, 18,10,24,17,yellow,3);
+    canvasLine(uiAlertCanvas, 24,10,18,17,yellow,3);
+    return;
   }
-  if (settings.showSpeedLimit && hud.nextSpeedLimit > 0 && hud.nextSpeedLimit != hud.speedLimit) {
-    smoothTextCentered("NEXT", 51, 157, 51, &FreeSans9pt7b, C_BLUE);
-    drawMiniSpeedLimit(76, 179, hud.nextSpeedLimit, 14);
+
+  // Traffic jam.
+  if (code == 6) {
+    for (int i=0;i<3;i++) canvasRect(uiAlertCanvas, 7, 8+i*10, 30, 6, orange, orange, 0, 3);
+    return;
+  }
+
+  // Roadwork.
+  if (code == 14) {
+    canvasLine(uiAlertCanvas, 6,36,22,7,yellow,4);
+    canvasLine(uiAlertCanvas, 22,7,38,36,yellow,4);
+    canvasLine(uiAlertCanvas, 6,36,38,36,yellow,4);
+    canvasCircle(uiAlertCanvas, 21,17,3,white,3);
+    canvasLine(uiAlertCanvas, 21,20,17,31,white,3);
+    canvasLine(uiAlertCanvas, 21,22,30,28,white,3);
+    return;
+  }
+
+  // Pothole / object / animal / weather / lane / generic hazard.
+  if (code == 15) {
+    canvasLine(uiAlertCanvas, 5,13,39,13,white,2);
+    canvasLine(uiAlertCanvas, 5,13,12,34,orange,3);
+    canvasLine(uiAlertCanvas, 12,34,22,25,orange,3);
+    canvasLine(uiAlertCanvas, 22,25,31,35,orange,3);
+    canvasLine(uiAlertCanvas, 31,35,39,13,orange,3);
+    return;
+  }
+  if (code == 47 || code == 49) {
+    canvasCircle(uiAlertCanvas, 15,22,6,orange,4);
+    canvasCircle(uiAlertCanvas, 28,22,6,orange,4);
+    canvasLine(uiAlertCanvas, 12,14,8,6,orange,3);
+    canvasLine(uiAlertCanvas, 31,14,35,6,orange,3);
+    return;
+  }
+  if (code == 16 || (code >= 50 && code <= 55)) {
+    canvasCircle(uiAlertCanvas, 14,18,6,white,5);
+    canvasCircle(uiAlertCanvas, 23,14,8,white,5);
+    canvasCircle(uiAlertCanvas, 31,19,5,white,5);
+    canvasLine(uiAlertCanvas, 10,31,7,38,cyan,2);
+    canvasLine(uiAlertCanvas, 21,31,18,38,cyan,2);
+    canvasLine(uiAlertCanvas, 32,31,29,38,cyan,2);
+    return;
+  }
+
+  // Restrictions / closure.
+  if (code == 7 || code == 38 || (code >= 25 && code <= 39) || (code >= 65 && code <= 74)) {
+    canvasCircle(uiAlertCanvas, cx, cy, 17, red, 4);
+    canvasLine(uiAlertCanvas, 10,34,34,10,red,4);
+    return;
+  }
+
+  // Generic warning triangle.
+  canvasLine(uiAlertCanvas, 22,5,5,37,yellow,4);
+  canvasLine(uiAlertCanvas, 5,37,39,37,yellow,4);
+  canvasLine(uiAlertCanvas, 39,37,22,5,yellow,4);
+  canvasLine(uiAlertCanvas, 22,16,22,27,white,3);
+  canvasCircle(uiAlertCanvas,22,32,1,white,2);
+}
+
+void buildStatusDots(lv_obj_t *parent) {
+  uiBleDot = lv_obj_create(parent);
+  lv_obj_remove_style_all(uiBleDot);
+  lv_obj_set_pos(uiBleDot, 276, 10);
+  lv_obj_set_size(uiBleDot, 7, 7);
+  lv_obj_set_style_radius(uiBleDot, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_opa(uiBleDot, LV_OPA_COVER, 0);
+
+  for (int i=0;i<4;i++) {
+    uiWifiBars[i] = lv_obj_create(parent);
+    lv_obj_remove_style_all(uiWifiBars[i]);
+    lv_obj_set_pos(uiWifiBars[i], 292 + i*6, 18 - (5+i*3));
+    lv_obj_set_size(uiWifiBars[i], 4, 5+i*3);
+    lv_obj_set_style_bg_opa(uiWifiBars[i], LV_OPA_COVER, 0);
   }
 }
 
-void drawNavPanel() {
-  String dist = formatDistance(hud.distanceM);
-
-  if (settings.hudStyle == 3) {
-    // Left maneuver + center lane guidance.
-    tft.fillRect(0, 38, 93, 100, C_BG);
-    drawArrow(hud.turn, 45, 77);
-    smoothTextCentered(dist, 2, 131, 89, &FreeSansBold12pt7b, C_WHITE);
-
-    drawLaneGuidance();
-    return;
-  }
-
-  if (settings.hudStyle == 0) {
-    tft.fillRoundRect(101, 45, 122, 144, 9, C_BG);
-    tft.drawRoundRect(100, 44, 124, 146, 10, C_BLUE2);
-    smoothText("NEXT", 111, 64, &FreeSans9pt7b, C_BLUE);
-    smoothTextRight(dist, 214, 64, &FreeSans9pt7b, C_YELLOW);
-    drawArrow(hud.turn, 162, 133);
-    return;
-  }
-
-  if (settings.hudStyle == 1) {
-    tft.fillRoundRect(91, 49, 146, 140, 11, C_BG);
-    tft.drawRoundRect(90, 48, 148, 142, 12, C_BLUE2);
-    smoothText("NEXT TURN", 102, 68, &FreeSans9pt7b, C_BLUE);
-    smoothTextRight(dist, 226, 69, &FreeSansBold12pt7b, C_YELLOW);
-    drawArrow(hud.turn, 164, 132);
-
-    String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
-    if (road.length() > 18) road = road.substring(0, 18);
-    if (road.length()) smoothTextCentered(road, 94, 181, 140, &FreeSans9pt7b, C_WHITE);
-    return;
-  }
-
-  tft.fillRect(104, 32, 133, 166, C_BG);
-  smoothText("NEXT", 114, 54, &FreeSans9pt7b, C_BLUE);
-  smoothTextRight(dist, 229, 58, &FreeSansBold12pt7b, C_YELLOW);
-  drawArrow(hud.turn, 171, 124);
-
-  String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
-  if (road.length() > 16) road = road.substring(0, 16);
-  if (road.length()) smoothTextCentered(road, 106, 184, 129, &FreeSans9pt7b, C_WHITE);
+void refreshStatusDots() {
+  lv_color_t bleC = bleConnected ? lc(0x39E889) : lc(0x273348);
+  lv_color_t wifiC = WiFi.status() == WL_CONNECTED ? lc(0x39E889) : lc(0x273348);
+  if (uiBleDot) lv_obj_set_style_bg_color(uiBleDot, bleC, 0);
+  for (int i=0;i<4;i++) if (uiWifiBars[i]) lv_obj_set_style_bg_color(uiWifiBars[i], wifiC, 0);
 }
 
-void drawAlertPanel(bool linkLost) {
-  if (settings.hudStyle == 3) {
-    tft.fillRect(244, 38, 76, 166, C_BG);
+void ensureHudScreen() {
+  if (lvUiMode == LVUI_HUD) return;
+  lvUiClear(LVUI_HUD);
+  lv_obj_t *root = lv_scr_act();
 
-    if (linkLost) {
-      smoothTextCentered("LINK", 244, 65, 76, &FreeSans9pt7b, C_RED);
-      smoothTextCentered("LOST", 244, 90, 76, &FreeSansBold12pt7b, C_RED);
-      return;
-    }
+  makeLineRect(root, 6, 35, 308, 1, lc(0x1A2838));
+  makeLineRect(root, 94, 42, 1, 174, lc(0x1A2838));
+  makeLineRect(root, 242, 42, 1, 174, lc(0x1A2838));
+  makeLineRect(root, 6, 216, 308, 1, lc(0x1A2838));
+  makeLineRect(root, 246, 108, 70, 1, lc(0x1A2838));
+  makeLineRect(root, 246, 153, 70, 1, lc(0x1A2838));
 
-    // Top: nearest active Waze alert.
-    if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
-      drawWazeAlertIcon(hud.alertCode, 281, 60);
-      smoothTextCentered(formatDistance(hud.alertDistanceM), 245, 103, 73, &FreeSansBold12pt7b, C_WHITE);
-    }
+  uiTitle = makeLabel(root, 8, 4, 258, 28, &lv_font_montserrat_18, lc(0xF5F8FF));
 
-    // Middle: remaining route distance, with road glyph.
-    drawRouteGlyph(262, 130, C_BLUE);
-    smoothTextRight(String(hud.remainingKm, 1) + " km", 316, 144, &FreeSans9pt7b, C_WHITE);
+  buildStatusDots(root);
 
-    // Bottom: next speed-limit change when Waze provides it.
-    int nextLimit = hud.nextSpeedLimit > 0 ? hud.nextSpeedLimit : hud.speedLimit;
-    if (settings.showSpeedLimit && nextLimit > 0) {
-      smoothText("NEXT", 248, 169, &FreeSans9pt7b, C_GREY);
-      drawMiniSpeedLimit(292, 178, nextLimit, 18);
-      if (hud.nextSpeedDistanceM >= 0) {
-        smoothTextCentered(compactDistance(hud.nextSpeedDistanceM), 246, 203, 72, &FreeSans9pt7b, C_GREY);
-      }
-    }
-    return;
-  }
+  uiManeuverCanvas = lv_canvas_create(root);
+  lv_canvas_set_buffer(uiManeuverCanvas, lvMainCanvasBuf, 72, 72, LV_IMG_CF_TRUE_COLOR);
+  lv_obj_set_pos(uiManeuverCanvas, 11, 42);
 
-  int x = settings.hudStyle == 1 ? 244 : (settings.hudStyle == 2 ? 239 : 230);
-  int w = settings.hudStyle == 1 ? 70 : (settings.hudStyle == 2 ? 81 : 84);
-  int cy = 77;
+  uiDistance = makeLabel(root, 4, 115, 86, 24, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiEtaCaption = makeLabel(root, 8, 145, 78, 18, &lv_font_montserrat_12, lc(0x5FE9FF));
+  uiEta = makeLabel(root, 8, 164, 82, 26, &lv_font_montserrat_18, lc(0xF5F8FF));
 
-  if (settings.hudStyle == 0) {
-    tft.fillRoundRect(231, 45, 82, 144, 9, C_BG);
-    tft.drawRoundRect(230, 44, 84, 146, 10, linkLost ? C_RED : C_DARK);
-  } else if (settings.hudStyle == 1) {
-    tft.fillRoundRect(245, 49, 68, 140, 9, C_BG);
-    tft.drawRoundRect(244, 48, 70, 142, 10, linkLost ? C_RED : C_DARK);
-  } else {
-    tft.fillRect(239, 32, 81, 166, C_BG);
-  }
+  uiSpeed = makeLabel(root, 100, 43, 76, 53, &lv_font_montserrat_40, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiSpeedUnit = makeLabel(root, 105, 99, 64, 18, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
 
-  if (linkLost) {
-    tft.fillCircle(x + w/2, cy, 5, C_RED);
-    smoothTextCentered("LINK", x, 108, w, &FreeSans9pt7b, C_WHITE);
-    smoothTextCentered("LOST", x, 134, w, &FreeSansBold12pt7b, C_RED);
-    return;
-  }
+  uiLimitCircle = lv_obj_create(root);
+  lv_obj_remove_style_all(uiLimitCircle);
+  lv_obj_set_pos(uiLimitCircle, 176, 47);
+  lv_obj_set_size(uiLimitCircle, 60, 60);
+  lv_obj_set_style_radius(uiLimitCircle, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(uiLimitCircle, lc(0xFFFFFF), 0);
+  lv_obj_set_style_bg_opa(uiLimitCircle, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(uiLimitCircle, lc(0xFF3B30), 0);
+  lv_obj_set_style_border_width(uiLimitCircle, 6, 0);
+  uiLimitText = makeLabel(uiLimitCircle, 0, 14, 60, 32, &lv_font_montserrat_24, lc(0x101820), LV_TEXT_ALIGN_CENTER);
 
-  if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
-    drawWazeAlertIcon(hud.alertCode, x + w/2, cy);
+  uiLaneCanvas = lv_canvas_create(root);
+  lv_canvas_set_buffer(uiLaneCanvas, lvLaneCanvasBuf, 140, 58, LV_IMG_CF_TRUE_COLOR);
+  lv_obj_set_pos(uiLaneCanvas, 98, 147);
 
-    String label = String(hlpAlertLabel(hud.alertCode));
-    if (label.length() > 10) label = label.substring(0, 10);
-    smoothTextCentered(label, x, 112, w, &FreeSans9pt7b, C_WHITE);
+  uiRoad = makeLabel(root, 96, 215, 145, 23, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
-    if (hud.alertValue >= 0 && (hud.alertCode == 8 || hud.alertCode == 22)) {
-      smoothTextCentered(String(hud.alertValue) + " km/h", x, 137, w, &FreeSans9pt7b, C_YELLOW);
-      smoothTextCentered(formatDistance(hud.alertDistanceM), x, 161, w, &FreeSans9pt7b, C_GREY);
-    } else if (hud.alertCode == 6 && hud.alertSeverity > 0) {
-      smoothTextCentered("JAM " + String(hud.alertSeverity) + "/5", x, 137, w, &FreeSans9pt7b, C_YELLOW);
-      String extra = hud.alertDelayMin >= 0 ? ("+" + String(hud.alertDelayMin) + " min") : formatDistance(hud.alertDistanceM);
-      smoothTextCentered(extra, x, 161, w, &FreeSans9pt7b, C_GREY);
-    } else {
-      smoothTextCentered(formatDistance(hud.alertDistanceM), x, 143, w, &FreeSansBold12pt7b, C_YELLOW);
-    }
-  } else {
-    // No alert: keep this area intentionally clean. Connectivity/IP belongs
-    // on the boot/settings screen, not on the driving HUD.
-  }
-}
+  uiAlertCanvas = lv_canvas_create(root);
+  lv_canvas_set_buffer(uiAlertCanvas, lvAlertCanvasBuf, 44, 44, LV_IMG_CF_TRUE_COLOR);
+  lv_obj_set_pos(uiAlertCanvas, 259, 40);
+  uiAlertLabel = makeLabel(root, 246, 84, 70, 17, &lv_font_montserrat_12, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiAlertDistance = makeLabel(root, 246, 99, 70, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
-void drawFooterPanel() {
-  if (settings.hudStyle == 3) {
-    // Left: ETA only (battery/voltage intentionally removed).
-    tft.fillRect(0, 140, 94, 100, C_BG);
-    tft.drawFastHLine(6, 139, 88, C_LINE_DIM);
-    smoothText("ETA", 8, 165, &FreeSans9pt7b, C_CYAN);
-    smoothText(settings.showEta ? hud.eta : "--:--", 8, 191, &FreeSansBold12pt7b, C_WHITE);
+  uiRemainCaption = makeLabel(root, 248, 114, 64, 16, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  uiRemain = makeLabel(root, 246, 132, 70, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
-    // Bottom center: road/route name.
-    tft.fillRect(95, 217, 149, 23, C_BG);
-    String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
-    if (!road.length() && settings.showRoute) road = cleanText(hud.route);
-    if (road.length() > 18) road = road.substring(0, 18);
-    if (road.length()) smoothTextCentered(road, 96, 236, 146, &FreeSans9pt7b, C_WHITE);
+  uiNextCaption = makeLabel(root, 248, 157, 64, 15, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  uiNextLimitCircle = lv_obj_create(root);
+  lv_obj_remove_style_all(uiNextLimitCircle);
+  lv_obj_set_pos(uiNextLimitCircle, 270, 170);
+  lv_obj_set_size(uiNextLimitCircle, 42, 42);
+  lv_obj_set_style_radius(uiNextLimitCircle, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_bg_color(uiNextLimitCircle, lc(0xFFFFFF), 0);
+  lv_obj_set_style_bg_opa(uiNextLimitCircle, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_color(uiNextLimitCircle, lc(0xFF3B30), 0);
+  lv_obj_set_style_border_width(uiNextLimitCircle, 4, 0);
+  uiNextLimitText = makeLabel(uiNextLimitCircle, 0, 10, 42, 22, &lv_font_montserrat_14, lc(0x101820), LV_TEXT_ALIGN_CENTER);
+  uiNextDistance = makeLabel(root, 246, 211, 70, 18, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
 
-    // Bottom right: actual clock from NTP; no IP/status text.
-    tft.fillRect(245, 205, 75, 35, C_BG);
-    smoothTextRight(currentClockText(), 316, 234, &FreeSansBold12pt7b, C_WHITE);
-    return;
-  }
+  uiClock = makeLabel(root, 245, 219, 71, 20, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_RIGHT);
 
-  tft.fillRect(0, 199, 320, 41, C_BG);
-  tft.drawFastHLine(8, 198, 304, C_DARK);
-
-  if (settings.hudStyle == 2) {
-    String left = "LEFT " + String(hud.remainingKm, 1) + " km";
-    String eta = settings.showEta ? ("ETA " + hud.eta) : "ETA --:--";
-    smoothText(left, 10, 226, &FreeSans9pt7b, C_WHITE);
-    smoothTextRight(eta, 310, 226, &FreeSans9pt7b, C_BLUE);
-    return;
-  }
-
-  smoothText("LEFT", 10, 214, &FreeSans9pt7b, C_GREY);
-  smoothText(String(hud.remainingKm, 1) + " km", 10, 235, &FreeSans9pt7b, C_WHITE);
-
-  smoothText("ETA", 121, 214, &FreeSans9pt7b, C_GREY);
-  smoothText(settings.showEta ? hud.eta : "--:--", 121, 235, &FreeSans9pt7b, C_BLUE);
-
-  String route = settings.showRoute ? cleanText(hud.route) : "";
-  if (route.length() > 8) route = route.substring(0, 8);
-  smoothText("ROUTE", 236, 214, &FreeSans9pt7b, C_GREY);
-  smoothTextRight(route.length() ? route : "--", 310, 235, &FreeSans9pt7b, C_WHITE);
+  lv_label_set_text(uiEtaCaption, "ETA");
+  lv_label_set_text(uiSpeedUnit, "km/h");
+  lv_label_set_text(uiRemainCaption, "LEFT");
+  lv_label_set_text(uiNextCaption, "NEXT");
 }
 
 void drawHud() {
-  if (!hud.valid) return;
+  ensureHudScreen();
 
-  bool linkLost = millis() - hud.updatedAt > HUD_TIMEOUT_MS;
-  bool layoutChanged = settings.hudStyle != renderedSettings.hudStyle;
-  bool first = !hudRenderValid || layoutChanged;
+  lv_label_set_text(uiTitle, maneuverInstruction(hud.turn));
 
-  bool topDirty =
-    first ||
-    hud.road != renderedHud.road ||
-    hud.turn != renderedHud.turn ||
-    (settings.hudStyle == 3 && (bleConnected != renderedBleState ||
-                                (WiFi.status() == WL_CONNECTED) != renderedWifiState)) ||
-    settings.showRoad != renderedSettings.showRoad;
+  String spd = String(max(0, hud.speed));
+  lv_label_set_text(uiSpeed, spd.c_str());
+  lv_obj_set_style_text_color(uiSpeed, hud.overSpeed ? lc(0xFF453A) : lc(0xF5F8FF), 0);
 
-  bool speedDirty =
-    first ||
-    hud.speed != renderedHud.speed ||
-    hud.speedLimit != renderedHud.speedLimit ||
-    hud.overSpeed != renderedHud.overSpeed ||
-    hud.nextSpeedLimit != renderedHud.nextSpeedLimit ||
-    hud.nextSpeedDistanceM != renderedHud.nextSpeedDistanceM ||
-    settings.showSpeedLimit != renderedSettings.showSpeedLimit;
+  String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
+  lv_label_set_text(uiLimitText, limit.c_str());
+  lv_obj_set_flag(uiLimitCircle, LV_OBJ_FLAG_HIDDEN, !(settings.showSpeedLimit && hud.speedLimit > 0));
 
-  bool navDirty =
-    first ||
-    hud.turn != renderedHud.turn ||
-    (settings.hudStyle == 3 && hud.distanceM != renderedHud.distanceM);
+  drawTurnOnCanvas(uiManeuverCanvas, hud.turn, false);
+  String distance = formatDistance(hud.distanceM);
+  lv_label_set_text(uiDistance, distance.c_str());
 
-  bool alertSettingChanged =
-    settings.alertPolice != renderedSettings.alertPolice ||
-    settings.alertCamera != renderedSettings.alertCamera ||
-    settings.alertCrash != renderedSettings.alertCrash ||
-    settings.alertTraffic != renderedSettings.alertTraffic ||
-    settings.alertRoadworks != renderedSettings.alertRoadworks ||
-    settings.alertHazard != renderedSettings.alertHazard;
+  String eta = settings.showEta && hud.eta.length() ? hud.eta : "--:--";
+  lv_label_set_text(uiEta, eta.c_str());
 
-  bool alertDirty =
-    first ||
-    hud.alertCode != renderedHud.alertCode ||
-    hud.alert != renderedHud.alert ||
-    hud.alertDistanceM != renderedHud.alertDistanceM ||
-    hud.alertValue != renderedHud.alertValue ||
-    hud.alertSeverity != renderedHud.alertSeverity ||
-    hud.alertDelayMin != renderedHud.alertDelayMin ||
-    hud.alertCount != renderedHud.alertCount ||
-    (settings.hudStyle == 3 && (
-      fabsf(hud.remainingKm - renderedHud.remainingKm) > 0.01f ||
-      hud.nextSpeedLimit != renderedHud.nextSpeedLimit ||
-      hud.nextSpeedDistanceM != renderedHud.nextSpeedDistanceM
-    )) ||
-    linkLost != renderedLinkLost ||
-    alertSettingChanged;
+  drawLaneOnCanvas();
 
-  String clockNow = settings.hudStyle == 3 ? currentClockText() : "";
-  bool footerDirty =
-    first ||
-    fabsf(hud.remainingKm - renderedHud.remainingKm) > 0.01f ||
-    hud.eta != renderedHud.eta ||
-    hud.route != renderedHud.route ||
-    hud.road != renderedHud.road ||
-    (settings.hudStyle == 3 && clockNow != renderedClock) ||
-    settings.showEta != renderedSettings.showEta ||
-    settings.showRoute != renderedSettings.showRoute;
+  String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
+  if (!road.length() && settings.showRoute) road = cleanText(hud.route);
+  if (road.length() > 20) road = road.substring(0, 20);
+  lv_label_set_text(uiRoad, road.c_str());
 
-  if (!topDirty && !speedDirty && !navDirty && !alertDirty && !footerDirty) return;
+  drawAlertOnCanvas();
+  bool showAlert = hud.alertCode != 0 && alertEnabled(hud.alert);
+  lv_obj_set_flag(uiAlertCanvas, LV_OBJ_FLAG_HIDDEN, !showAlert);
+  lv_obj_set_flag(uiAlertLabel, LV_OBJ_FLAG_HIDDEN, !showAlert);
+  lv_obj_set_flag(uiAlertDistance, LV_OBJ_FLAG_HIDDEN, !showAlert);
+  if (showAlert) {
+    String al = String(hlpAlertLabel(hud.alertCode));
+    if (al.length() > 10) al = al.substring(0, 10);
+    lv_label_set_text(uiAlertLabel, al.c_str());
+    String ad = formatDistance(hud.alertDistanceM);
+    lv_label_set_text(uiAlertDistance, ad.c_str());
+  }
 
-  // One SPI transaction makes text and vector redraws noticeably cleaner/faster.
-  tft.startWrite();
-  if (first) drawStaticFrame();
-  if (topDirty) drawTopPanel();
-  if (speedDirty) drawSpeedPanel();
-  if (navDirty) drawNavPanel();
-  if (alertDirty) drawAlertPanel(linkLost);
-  if (footerDirty) drawFooterPanel();
-  tft.endWrite();
+  lv_label_set_text(uiRemain, (String(hud.remainingKm, 1) + " km").c_str());
 
-  renderedHud = hud;
-  renderedSettings = settings;
-  renderedLinkLost = linkLost;
-  renderedClock = clockNow;
-  renderedBleState = bleConnected;
-  renderedWifiState = WiFi.status() == WL_CONNECTED;
-  hudRenderValid = true;
+  int nextLimit = hud.nextSpeedLimit > 0 ? hud.nextSpeedLimit : 0;
+  bool showNext = settings.showSpeedLimit && nextLimit > 0 && nextLimit != hud.speedLimit;
+  lv_obj_set_flag(uiNextCaption, LV_OBJ_FLAG_HIDDEN, !showNext);
+  lv_obj_set_flag(uiNextLimitCircle, LV_OBJ_FLAG_HIDDEN, !showNext);
+  lv_obj_set_flag(uiNextDistance, LV_OBJ_FLAG_HIDDEN, !showNext);
+  if (showNext) {
+    String ns = String(nextLimit);
+    lv_label_set_text(uiNextLimitText, ns.c_str());
+    String nd = compactDistance(hud.nextSpeedDistanceM);
+    lv_label_set_text(uiNextDistance, nd.c_str());
+  }
+
+  String clk = currentClockText();
+  lv_label_set_text(uiClock, clk.c_str());
+
+  refreshStatusDots();
+  lvUiPump();
 }
+
+void buildBrandScreen(LvUiMode mode) {
+  lvUiClear(mode);
+  lv_obj_t *root = lv_scr_act();
+
+  lv_obj_t *logo = lv_canvas_create(root);
+  lv_canvas_set_buffer(logo, lvMainCanvasBuf, 72, 72, LV_IMG_CF_TRUE_COLOR);
+  lv_obj_set_pos(logo, 124, 24);
+  drawBrandOnCanvas(logo, 72, 72);
+
+  lv_obj_t *name = makeLabel(root, 0, 101, 320, 33, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  lv_label_set_text(name, "WAZE HUD");
+
+  lv_obj_t *sub = makeLabel(root, 0, 134, 320, 20, &lv_font_montserrat_12, lc(0x7B8DA3), LV_TEXT_ALIGN_CENTER);
+  lv_label_set_text(sub, "SMART NAV DISPLAY");
+}
+
+void drawBootSplash() {
+  buildBrandScreen(LVUI_BOOT);
+
+  uiBootStage = makeLabel(lv_scr_act(), 0, 160, 320, 20, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  uiBootBar = lv_bar_create(lv_scr_act());
+  lv_obj_set_pos(uiBootBar, 38, 190);
+  lv_obj_set_size(uiBootBar, 244, 12);
+  lv_obj_set_style_bg_color(uiBootBar, lc(0x172332), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(uiBootBar, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_radius(uiBootBar, 6, LV_PART_MAIN);
+  lv_obj_set_style_bg_color(uiBootBar, lc(0x27DFFF), LV_PART_INDICATOR);
+  lv_obj_set_style_radius(uiBootBar, 6, LV_PART_INDICATOR);
+  lv_bar_set_range(uiBootBar, 0, 100);
+
+  uiBootPercent = makeLabel(lv_scr_act(), 0, 207, 320, 22, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+
+  lv_obj_t *ver = makeLabel(lv_scr_act(), 10, 224, 100, 15, &lv_font_montserrat_12, lc(0x5F7187));
+  lv_label_set_text(ver, ("v" + String(FW_VERSION)).c_str());
+
+  updateBootProgress(5, "POWERING UP");
+}
+
+void updateBootProgress(uint8_t percent, const String &stage) {
+  if (lvUiMode != LVUI_BOOT || !uiBootBar) drawBootSplash();
+  percent = constrain((int)percent, 0, 100);
+  lv_bar_set_value(uiBootBar, percent, LV_ANIM_OFF);
+  lv_label_set_text(uiBootStage, stage.c_str());
+  lv_label_set_text(uiBootPercent, (String(percent) + "%").c_str());
+  lv_obj_set_style_text_color(uiBootStage, percent >= 100 ? lc(0x39E889) : lc(0x8C9CB0), 0);
+  lv_obj_set_style_bg_color(uiBootBar, percent >= 100 ? lc(0x39E889) : lc(0x27DFFF), LV_PART_INDICATOR);
+  lvUiPump();
+}
+
 void drawWaiting() {
-  hudRenderValid = false;
-  tft.fillScreen(C_BG);
+  if (lvUiMode != LVUI_WAITING) {
+    buildBrandScreen(LVUI_WAITING);
+    uiWaitStatus = makeLabel(lv_scr_act(), 0, 163, 320, 22, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+    uiWaitIp = makeLabel(lv_scr_act(), 0, 190, 320, 24, &lv_font_montserrat_18, lc(0x28DFFF), LV_TEXT_ALIGN_CENTER);
+    lv_obj_t *hint = makeLabel(lv_scr_act(), 0, 217, 320, 18, &lv_font_montserrat_12, lc(0x7B8DA3), LV_TEXT_ALIGN_CENTER);
+    lv_label_set_text(hint, "BLE: WazeHUD  |  Web setup");
+  }
 
-  String ip = apMode ? WiFi.softAPIP().toString() :
-              (WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "connecting...");
+  String status;
+  if (bleConnected) status = "BLE CONNECTED";
+  else if (WiFi.status() == WL_CONNECTED) status = "WAITING FOR WAZEMOD";
+  else if (apMode) status = "SETUP ACCESS POINT";
+  else status = "CONNECTING";
 
-  tft.fillRoundRect(14, 18, 292, 204, 16, C_PANEL);
-  tft.drawRoundRect(14, 18, 292, 204, 16, C_DARK);
-  tft.fillRoundRect(29, 33, 6, 44, 3, C_BLUE);
-
-  smoothText("WAZE HUD", 48, 61, &FreeSansBold18pt7b, C_WHITE);
-  smoothText(String("v") + FW_VERSION, 50, 82, &FreeSans9pt7b, C_GREY);
-
-  tft.fillCircle(42, 110, 5, bleConnected ? C_GREEN : C_YELLOW);
-  smoothText(bleConnected ? "BLE CONNECTED" : "BLE WAITING", 56, 115, &FreeSans9pt7b, C_WHITE);
-
-  bool wifiOk = WiFi.status() == WL_CONNECTED;
-  tft.fillCircle(42, 141, 5, wifiOk ? C_GREEN : (apMode ? C_YELLOW : C_GREY));
-  String wifiLabel = wifiOk ? "WIFI CONNECTED" : (apMode ? "SETUP AP" : "WIFI CONNECTING");
-  smoothText(wifiLabel, 56, 146, &FreeSans9pt7b, C_WHITE);
-
-  smoothText("WEB IP", 30, 173, &FreeSans9pt7b, C_GREY);
-  tft.fillRoundRect(93, 154, 193, 30, 7, C_BG);
-  smoothText(ip, 104, 176, &FreeSansBold12pt7b, C_BLUE);
-
-  smoothText(apMode ? "AP WAZE-HUD / pass 12345678" : "Open IP for settings / OTA",
-             30, 207, &FreeSans9pt7b, C_GREY);
-
-  shownIp = ip;
+  lv_label_set_text(uiWaitStatus, status.c_str());
+  String ip = currentIpString();
+  lv_label_set_text(uiWaitIp, ip.c_str());
+  lvUiPump();
   wifiUiDirty = false;
+}
+
+void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
+  if (reset || lvUiMode != LVUI_OTA) {
+    lvUiClear(LVUI_OTA);
+
+    lv_obj_t *logo = lv_canvas_create(lv_scr_act());
+    lv_canvas_set_buffer(logo, lvMainCanvasBuf, 72, 72, LV_IMG_CF_TRUE_COLOR);
+    lv_obj_set_pos(logo, 16, 20);
+    drawBrandOnCanvas(logo, 72, 72);
+
+    lv_obj_t *title = makeLabel(lv_scr_act(), 96, 25, 210, 28, &lv_font_montserrat_18, lc(0xF5F8FF));
+    lv_label_set_text(title, "SYSTEM UPDATE");
+
+    lv_obj_t *ver = makeLabel(lv_scr_act(), 96, 58, 210, 20, &lv_font_montserrat_12, lc(0x7B8DA3));
+    lv_label_set_text(ver, ("v" + String(FW_VERSION) + "  >  v" + latestVersion).c_str());
+
+    uiOtaStage = makeLabel(lv_scr_act(), 0, 101, 320, 22, &lv_font_montserrat_14, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
+
+    uiOtaBar = lv_bar_create(lv_scr_act());
+    lv_obj_set_pos(uiOtaBar, 28, 137);
+    lv_obj_set_size(uiOtaBar, 264, 18);
+    lv_obj_set_style_bg_color(uiOtaBar, lc(0x172332), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(uiOtaBar, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(uiOtaBar, lc(0x27DFFF), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_INDICATOR);
+    lv_bar_set_range(uiOtaBar, 0, 100);
+
+    uiOtaPercent = makeLabel(lv_scr_act(), 0, 164, 320, 34, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+
+    lv_obj_t *warn = makeLabel(lv_scr_act(), 0, 214, 320, 18, &lv_font_montserrat_12, lc(0xFFD54A), LV_TEXT_ALIGN_CENTER);
+    lv_label_set_text(warn, "DO NOT POWER OFF");
+  }
+
+  percent = constrain((int)percent, 0, 100);
+  lv_bar_set_value(uiOtaBar, percent, LV_ANIM_OFF);
+  lv_label_set_text(uiOtaStage, stage.c_str());
+  lv_label_set_text(uiOtaPercent, (String(percent) + "%").c_str());
+
+  if (percent >= 100) {
+    lv_obj_set_style_bg_color(uiOtaBar, lc(0x39E889), LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(uiOtaStage, lc(0x39E889), 0);
+    lv_obj_set_style_text_color(uiOtaPercent, lc(0x39E889), 0);
+  }
+  lvUiPump();
 }
 
 class HudBleServerCallbacks : public BLEServerCallbacks {
@@ -2599,7 +1921,7 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 
 <form method="post" action="/settings">
 <div class="card"><h2>Hiển thị HUD</h2>
-<div class="row"><div><b>Kiểu hiển thị</b><div class="sub">Đổi bố cục HUD, lưu qua lần khởi động sau</div></div><select name="layout"><option value="3" %LAYOUT3%>Full HUD (Chốt)</option><option value="0" %LAYOUT0%>Balanced</option><option value="1" %LAYOUT1%>Navigation</option><option value="2" %LAYOUT2%>Minimal</option></select></div>
+<div class="row"><div><b>Kiểu hiển thị</b><div class="sub">LVGL anti-aliased, tối ưu riêng cho ILI9341 320×240</div></div><b>Full HUD LVGL</b></div>
 <div class="row"><div><b>Phản chiếu HUD</b><div class="sub">Dành cho hiển thị phản xạ lên kính lái</div></div><input type="checkbox" name="mirror" %MIRROR%></div>
 <div class="row"><div><b>Chế độ ban đêm</b><div class="sub">Nền đen, độ tương phản cao</div></div><input type="checkbox" name="night" %NIGHT%></div>
 <div class="row"><div><b>Độ sáng giao diện</b><div class="sub">Lưu cấu hình mức sáng HUD</div></div><input type="range" name="bright" min="20" max="100" value="%BRIGHT%"></div>
@@ -2697,7 +2019,7 @@ void setupServer() {
   });
 
   server.on("/settings", HTTP_POST, []() {
-    settings.hudStyle = constrain(server.arg("layout").toInt(), 0, 3);
+    settings.hudStyle = 3;
     settings.mirrorHud = server.hasArg("mirror");
     settings.nightMode = server.hasArg("night");
     settings.showRoad = server.hasArg("road");
@@ -2851,7 +2173,8 @@ void connectWiFi() {
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
-    delay(150);
+    lvUiPump();
+    delay(30);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -2950,6 +2273,7 @@ void setup() {
   tft.begin(40000000);
   tft.setRotation(1);
   tft.setTextWrap(false);
+  lvUiInit();
 
   drawBootSplash();
 
@@ -2986,11 +2310,12 @@ void setup() {
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
 }
 
+
 void drawOverspeedBorder(bool visible) {
-  uint16_t color = visible ? C_RED : C_BG;
-  tft.drawRect(0, 0, 320, 240, color);
-  tft.drawRect(1, 1, 318, 238, color);
-  tft.drawRect(2, 2, 316, 236, color);
+  if (lvUiMode != LVUI_HUD) return;
+  lv_obj_set_style_border_width(lv_scr_act(), visible ? 3 : 0, 0);
+  lv_obj_set_style_border_color(lv_scr_act(), lc(0xFF453A), 0);
+  lv_obj_set_style_border_opa(lv_scr_act(), visible ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 }
 
 void updateOverspeedEffect() {
@@ -2998,7 +2323,7 @@ void updateOverspeedEffect() {
                 (millis() - hud.updatedAt <= HUD_TIMEOUT_MS);
 
   if (active) {
-    if (millis() - lastOverspeedBlink >= 250) {
+    if (millis() - lastOverspeedBlink >= 300) {
       lastOverspeedBlink = millis();
       overspeedBorderVisible = !overspeedBorderVisible;
       drawOverspeedBorder(overspeedBorderVisible);
@@ -3008,6 +2333,7 @@ void updateOverspeedEffect() {
     drawOverspeedBorder(false);
   }
 }
+
 
 void loop() {
   // Drain GATT bytes outside the Bluetooth callback. This prevents TFT/JSON work
@@ -3045,6 +2371,7 @@ void loop() {
 
   if (!otaInProgress) maintainWiFi();
   updateOverspeedEffect();
+  lvUiPump();
 
   // Reflect a new DHCP/AP address on the boot/waiting screen.
   String currentIp = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() :
@@ -3065,5 +2392,5 @@ void loop() {
     if (hud.valid) drawHud();
   }
 
-  delay(2);
+  delay(3);
 }

@@ -372,3 +372,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Trang Web Setting có progress bar và phần trăm OTA đồng bộ qua `/update-status`.
 - Trong khi OTA, firmware vẫn phục vụ `/update-status` để trình duyệt cập nhật tiến trình.
 - Giữ nguyên Full HUD v1.5.0 và toàn bộ HLP alert / Wi-Fi / BLE.
+
+
+## Firmware v1.6.0 — LVGL renderer
+
+- Thay renderer Adafruit_GFX thủ công bằng LVGL 8.3.11 cho Full HUD.
+- Partial display buffer 320×16, không cần PSRAM/full framebuffer.
+- Montserrat anti-aliased cho toàn bộ text chính: title, speed, ETA, alert, road, clock.
+- HUD chỉ giữ một layout Full HUD để giảm flash và tránh hai renderer chạy song song.
+- Maneuver + lane guidance được vẽ trên canvas LVGL: route active cyan sáng, lane khác giảm sáng mạnh.
+- Boot logo, waiting screen và OTA progress chuyển sang LVGL.
+- BLE HLP/1, Wi-Fi, Web Setting và OTA logic giữ nguyên.
