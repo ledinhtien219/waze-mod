@@ -412,3 +412,11 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Theme choice is saved through BLE in `settings.style`.
 - Adds persisted lane visibility and km/h/mph selection.
 - The same finalized dashboard is now the primary HUD configuration surface; it is no longer a visual-only mock.
+
+
+## Firmware v1.7.5 — Reliable OTA manifest + manual recovery
+
+- OTA checks a compact GitHub Pages `firmware.json` manifest first.
+- GitHub Releases API is now a streaming/filter fallback instead of loading the full JSON response into RAM.
+- Semantic version comparison prevents accidental downgrade.
+- Local web UI can upload a `firmware.bin` directly into the OTA partition for recovery.
