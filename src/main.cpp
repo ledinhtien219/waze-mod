@@ -322,6 +322,7 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = fa
 void drawHud();
 void drawWaiting();
 void processBleInput();
+bool checkForUpdate();
 void processStudioInput();
 void publishStudioState(bool notifyStatus = false);
 String studioSettingsJson();
@@ -1599,7 +1600,7 @@ class StudioWriteCallbacks : public NimBLECharacteristicCallbacks {
     if (!studioRxQueue) return;
 
     auto value = characteristic->getValue();
-    if (value.empty() || value.length() > sizeof(StudioRxEvent::bytes)) return;
+    if (value.length() == 0 || value.length() > sizeof(StudioRxEvent::bytes)) return;
 
     StudioRxEvent ev;
     ev.type = type;
