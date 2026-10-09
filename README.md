@@ -397,3 +397,10 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Không còn gọi `WiFi.setSleep(false)`; Wi-Fi modem sleep được giữ bật để ESP32 Wi-Fi + BLE coexistence hoạt động đúng.
 - Khởi tạo BLE/Studio trước Wi-Fi để Web Bluetooth vẫn sẵn sàng ngay cả khi Wi-Fi lỗi hoặc timeout.
 - Giảm thời gian chờ Wi-Fi ban đầu từ 20 giây xuống 8 giây.
+
+
+## Firmware v1.7.3 — Studio BLE JSON framing fix
+
+- Studio characteristics now call NimBLE `setValue(data, length)` explicitly.
+- Prevents trailing buffer bytes from being exposed to Web Bluetooth JSON reads.
+- Studio parser also strips NUL/trailing bytes for compatibility with older 1.7.x firmware.

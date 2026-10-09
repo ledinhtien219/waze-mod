@@ -41,7 +41,7 @@ static const char *STUDIO_COMMAND_UUID  = "8a7e1005-4d6e-4c48-9a9d-484c504c0001"
 static const char *STUDIO_STATUS_UUID   = "8a7e1006-4d6e-4c48-9a9d-484c504c0001";
 static const char *STUDIO_HUD_UUID      = "8a7e1007-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.7.2";
+static const char *FW_VERSION = "1.7.3";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -1644,22 +1644,22 @@ String studioHudJson() {
 void publishStudioHud(bool notifyHud) {
   if (!studioHudCharacteristic) return;
   String v = studioHudJson();
-  studioHudCharacteristic->setValue(v.c_str());
+  studioHudCharacteristic->setValue((uint8_t*)v.c_str(), v.length());
   if (notifyHud) studioHudCharacteristic->notify();
 }
 
 void publishStudioState(bool notifyStatus) {
   if (studioInfoCharacteristic) {
     String v = studioInfoJson();
-    studioInfoCharacteristic->setValue(v.c_str());
+    studioInfoCharacteristic->setValue((uint8_t*)v.c_str(), v.length());
   }
   if (studioSettingsCharacteristic) {
     String v = studioSettingsJson();
-    studioSettingsCharacteristic->setValue(v.c_str());
+    studioSettingsCharacteristic->setValue((uint8_t*)v.c_str(), v.length());
   }
   if (studioStatusCharacteristic) {
     String v = studioStatusJson();
-    studioStatusCharacteristic->setValue(v.c_str());
+    studioStatusCharacteristic->setValue((uint8_t*)v.c_str(), v.length());
     if (notifyStatus) studioStatusCharacteristic->notify();
   }
   publishStudioHud(false);
@@ -1956,7 +1956,8 @@ void setupBLE() {
     BLE_CAPS_UUID,
     NIMBLE_PROPERTY::READ
   );
-  caps->setValue("{\"v\":1,\"caps\":{\"transport\":\"ble\",\"maxFrame\":512}}\n");
+  const char *capsJson = "{\"v\":1,\"caps\":{\"transport\":\"ble\",\"maxFrame\":512}}\n";
+  caps->setValue((uint8_t*)capsJson, strlen(capsJson));
 
   service->start();
 

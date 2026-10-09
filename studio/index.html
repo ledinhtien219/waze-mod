@@ -223,7 +223,14 @@ let device,gatt,chars={},connected=false,lastSettings={},lastStatus={},lastInfo=
 const $=id=>document.getElementById(id),enc=new TextEncoder(),dec=new TextDecoder();
 function fit(){const s=Math.min(window.innerWidth/1672,1);$('stage').style.transform='scale('+s+')';$('fit').style.height=(941*s)+'px'}addEventListener('resize',fit);fit();
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(window.__to);window.__to=setTimeout(()=>e.classList.remove('show'),2200)}
-function jsonValue(v){return JSON.parse(dec.decode(v.buffer.slice(v.byteOffset,v.byteOffset+v.byteLength)))}async function readJson(c){return jsonValue(await c.readValue())}async function writeJson(c,o){const d=enc.encode(JSON.stringify(o));if(d.length>240)throw new Error('Payload BLE quá dài');if(c.writeValueWithResponse)await c.writeValueWithResponse(d);else await c.writeValue(d)}
+function jsonValue(v){
+ const raw=dec.decode(v.buffer.slice(v.byteOffset,v.byteOffset+v.byteLength));
+ const nul=raw.indexOf('\0');
+ const clean=(nul>=0?raw.slice(0,nul):raw).trim();
+ const a=clean.indexOf('{'), b=clean.lastIndexOf('}');
+ if(a<0||b<a) throw new Error('BLE trả dữ liệu không hợp lệ');
+ return JSON.parse(clean.slice(a,b+1));
+}async function readJson(c){return jsonValue(await c.readValue())}async function writeJson(c,o){const d=enc.encode(JSON.stringify(o));if(d.length>240)throw new Error('Payload BLE quá dài');if(c.writeValueWithResponse)await c.writeValueWithResponse(d);else await c.writeValue(d)}
 function requireBle(){if(connected)return true;toast('Bấm trạng thái hoặc icon Bluetooth để kết nối WazeHUD');return false}
 function setConnected(v){connected=v;$('disconnectOverlay').style.display=v?'none':'flex';$('onlineMain').textContent=v?'Thiết bị online':'Chưa kết nối BLE';$('onlineSub').textContent=v?'WAZE HUD đã sẵn sàng':'Bấm để quét thiết bị';$('bleText').textContent=v?'Đang hoạt động':'Studio chưa kết nối';$('bleBadge').textContent=v?'Đã kết nối':'--';if(!v)$('hudFresh').textContent='Đang chờ'}
 async function connectBle(){if(connected){device?.gatt?.disconnect();return}if(!navigator.bluetooth){toast('Trình duyệt này không hỗ trợ Web Bluetooth');return}try{device=await navigator.bluetooth.requestDevice({filters:[{namePrefix:'WazeHUD'}],optionalServices:[UUID.service]});device.addEventListener('gattserverdisconnected',()=>{setConnected(false);requestAnimationFrame(syncHudReflection);toast('BLE đã ngắt')});gatt=await device.gatt.connect();const svc=await gatt.getPrimaryService(UUID.service);for(const k of ['info','settings','wifi','command','status']) chars[k]=await svc.getCharacteristic(UUID[k]);
@@ -239,7 +246,7 @@ try{
 lastInfo=await readJson(chars.info);lastSettings=await readJson(chars.settings);lastStatus=await readJson(chars.status);
 setConnected(true);applyInfo(lastInfo);applySettings(lastSettings);applyStatus(lastStatus);
 if(chars.hud) applyHud(await readJson(chars.hud)); else { $('hudFresh').textContent='Cần firmware v1.7.1'; toast('Đã kết nối. Cập nhật v1.7.1 để xem HUD realtime.'); }
-if(chars.hud) toast('Đã kết nối '+(device.name||'WazeHUD'))}catch(e){setConnected(false);toast('Không kết nối được: '+e.message)}}
+if(chars.hud) toast('Đã kết nối '+(device.name||'WazeHUD'))}catch(e){setConnected(false);log('BLE/JSON ERROR: '+e.message);toast('Không kết nối được: '+e.message)}}
 function applyInfo(i){$('devName').textContent=i.name||'WAZE HUD';if(i.fw){$('fw').textContent='v'+i.fw;$('fw2').textContent='v'+i.fw}$('mac').textContent=i.mac||'--'}
 function applySettings(s){lastSettings=s;$('mirror').checked=!!s.m;$('mirrorMaster').checked=!!s.m;$('brightness').value=s.b??80;$('brightTxt').textContent=(s.b??80)+'%';$('road').checked=!!s.road;$('route').checked=!!s.route;$('eta').checked=!!s.eta;$('limit').checked=!!s.limit;$('camera').checked=!!s.cam;$('police').checked=!!s.p;$('crash').checked=!!s.cr;$('traffic').checked=!!s.tr;$('work').checked=!!s.wrk;$('hazard').checked=!!s.haz;$('autoUpdate').checked=!!s.au;syncModal()}
 function applyStatus(s){
