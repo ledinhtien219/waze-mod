@@ -1603,6 +1603,7 @@ String studioStatusJson() {
   d["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
   d["msg"] = studioMessage;
   d["upd"] = updateAvailable;
+  d["chk"] = latestVersion.length() > 0;
   String out;
   serializeJson(d, out);
   return out;
@@ -2345,7 +2346,6 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 <div class="card"><h2>Hiển thị HUD</h2>
 <div class="row"><div><b>Kiểu hiển thị</b><div class="sub">LVGL anti-aliased, tối ưu riêng cho ILI9341 320×240</div></div><b>Full HUD LVGL</b></div>
 <div class="row"><div><b>Phản chiếu HUD</b><div class="sub">Dành cho hiển thị phản xạ lên kính lái</div></div><input type="checkbox" name="mirror" %MIRROR%></div>
-<div class="row"><div><b>Chế độ ban đêm</b><div class="sub">Nền đen, độ tương phản cao</div></div><input type="checkbox" name="night" %NIGHT%></div>
 <div class="row"><div><b>Độ sáng giao diện</b><div class="sub">Lưu cấu hình mức sáng HUD</div></div><input type="range" name="bright" min="20" max="100" value="%BRIGHT%"></div>
 <div class="row"><div><b>Tên đường</b></div><input type="checkbox" name="road" %ROAD%></div>
 <div class="row"><div><b>Tên tuyến</b></div><input type="checkbox" name="route" %ROUTE%></div>
@@ -2405,7 +2405,6 @@ async function saveAuto(){await fetch("/update-auto?enabled="+(document.getEleme
   html.replace("%WIFISTATUS%", WiFi.status()==WL_CONNECTED ? "Đã kết nối" : (apMode ? "AP cài đặt" : "Mất kết nối"));
   html.replace("%WIFICLASS%", WiFi.status()==WL_CONNECTED ? "ok" : "warn");
   html.replace("%MIRROR%", checked(settings.mirrorHud));
-  html.replace("%NIGHT%", checked(settings.nightMode));
   html.replace("%ROAD%", checked(settings.showRoad));
   html.replace("%ROUTE%", checked(settings.showRoute));
   html.replace("%ETA%", checked(settings.showEta));
@@ -2440,7 +2439,7 @@ void setupServer() {
   server.on("/settings", HTTP_POST, []() {
     settings.hudStyle = 3;
     settings.mirrorHud = server.hasArg("mirror");
-    settings.nightMode = server.hasArg("night");
+    settings.nightMode = true;
     settings.showRoad = server.hasArg("road");
     settings.showRoute = server.hasArg("route");
     settings.showEta = server.hasArg("eta");
