@@ -30,8 +30,17 @@ static const char *BLE_SERVICE_UUID = "8a7e0001-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
+
+// Waze HUD Studio configuration service. It is intentionally separate from
+// the official HLP/1 service so WazeMod remains protocol-compatible.
+static const char *STUDIO_SERVICE_UUID  = "8a7e1001-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_INFO_UUID     = "8a7e1002-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_SETTINGS_UUID = "8a7e1003-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_WIFI_UUID     = "8a7e1004-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_COMMAND_UUID  = "8a7e1005-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_STATUS_UUID   = "8a7e1006-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.6.0";
+static const char *FW_VERSION = "1.7.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -100,6 +109,22 @@ String bleRxBuffer;
 NimBLECharacteristic *bleNotifyCharacteristic = nullptr;
 uint32_t lastBleDevNotify = 0;
 String bleLocalAddress = "";
+
+// Studio BLE characteristics are read by Web Bluetooth clients.
+NimBLECharacteristic *studioInfoCharacteristic = nullptr;
+NimBLECharacteristic *studioSettingsCharacteristic = nullptr;
+NimBLECharacteristic *studioStatusCharacteristic = nullptr;
+
+struct StudioRxEvent {
+  uint8_t type; // 1=settings, 2=wifi, 3=command
+  uint16_t length;
+  uint8_t bytes[256];
+};
+
+QueueHandle_t studioRxQueue = nullptr;
+uint32_t lastStudioStatusNotify = 0;
+uint32_t studioRestartAt = 0;
+String studioMessage = "ready";
 
 struct BleRxChunk {
   uint16_t length;
@@ -171,6 +196,26 @@ void loadAppSettings() {
     prefs.putBool("full150", true);
     prefs.end();
   }
+}
+
+void saveAppSettings() {
+  prefs.begin("wazehud", false);
+  prefs.putBool("mirror", settings.mirrorHud);
+  prefs.putBool("night", settings.nightMode);
+  prefs.putBool("road", settings.showRoad);
+  prefs.putBool("route", settings.showRoute);
+  prefs.putBool("eta", settings.showEta);
+  prefs.putBool("limit", settings.showSpeedLimit);
+  prefs.putBool("a_police", settings.alertPolice);
+  prefs.putBool("a_camera", settings.alertCamera);
+  prefs.putBool("a_crash", settings.alertCrash);
+  prefs.putBool("a_traffic", settings.alertTraffic);
+  prefs.putBool("a_work", settings.alertRoadworks);
+  prefs.putBool("a_hazard", settings.alertHazard);
+  prefs.putBool("autoupdate", settings.autoUpdateCheck);
+  prefs.putUChar("bright", settings.brightness);
+  prefs.putUChar("layout", settings.hudStyle);
+  prefs.end();
 }
 
 
@@ -277,6 +322,11 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = fa
 void drawHud();
 void drawWaiting();
 void processBleInput();
+void processStudioInput();
+void publishStudioState(bool notifyStatus = false);
+String studioSettingsJson();
+String studioInfoJson();
+String studioStatusJson();
 
 struct HudState {
   TurnType turn = TURN_STRAIGHT;
@@ -1470,6 +1520,245 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
   lvUiPump();
 }
 
+
+String studioSettingsJson() {
+  // Compact keys keep the characteristic comfortably below a normal BLE MTU.
+  JsonDocument d;
+  d["m"] = settings.mirrorHud;
+  d["n"] = settings.nightMode;
+  d["b"] = settings.brightness;
+  d["road"] = settings.showRoad;
+  d["route"] = settings.showRoute;
+  d["eta"] = settings.showEta;
+  d["limit"] = settings.showSpeedLimit;
+  d["p"] = settings.alertPolice;
+  d["cam"] = settings.alertCamera;
+  d["cr"] = settings.alertCrash;
+  d["tr"] = settings.alertTraffic;
+  d["wrk"] = settings.alertRoadworks;
+  d["haz"] = settings.alertHazard;
+  d["au"] = settings.autoUpdateCheck;
+  d["style"] = settings.hudStyle;
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+String studioInfoJson() {
+  JsonDocument d;
+  d["name"] = BLE_DEVICE_NAME;
+  d["fw"] = FW_VERSION;
+  d["mac"] = bleLocalAddress;
+  d["screen"] = "ILI9341 320x240";
+  d["renderer"] = "lvgl";
+  d["ble"] = "nimble";
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+String studioStatusJson() {
+  JsonDocument d;
+  d["fw"] = FW_VERSION;
+  d["wifi"] = WiFi.status() == WL_CONNECTED;
+  d["ssid"] = WiFi.status() == WL_CONNECTED ? WiFi.SSID() : wifiSSID;
+  d["ip"] = currentIpString();
+  d["hlp"] = bleHlpReady;
+  d["hud"] = hud.valid && (millis() - hud.updatedAt <= HUD_TIMEOUT_MS);
+  d["ota"] = otaStatus;
+  d["pct"] = otaPercent;
+  d["heap"] = (uint32_t)ESP.getFreeHeap();
+  d["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+  d["msg"] = studioMessage;
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+void publishStudioState(bool notifyStatus) {
+  if (studioInfoCharacteristic) {
+    String v = studioInfoJson();
+    studioInfoCharacteristic->setValue(v.c_str());
+  }
+  if (studioSettingsCharacteristic) {
+    String v = studioSettingsJson();
+    studioSettingsCharacteristic->setValue(v.c_str());
+  }
+  if (studioStatusCharacteristic) {
+    String v = studioStatusJson();
+    studioStatusCharacteristic->setValue(v.c_str());
+    if (notifyStatus) studioStatusCharacteristic->notify();
+  }
+}
+
+class StudioWriteCallbacks : public NimBLECharacteristicCallbacks {
+ public:
+  explicit StudioWriteCallbacks(uint8_t eventType) : type(eventType) {}
+
+  void onWrite(NimBLECharacteristic *characteristic) override {
+    if (!studioRxQueue) return;
+
+    auto value = characteristic->getValue();
+    if (value.empty() || value.length() > sizeof(StudioRxEvent::bytes)) return;
+
+    StudioRxEvent ev;
+    ev.type = type;
+    ev.length = (uint16_t)value.length();
+    memcpy(ev.bytes, value.data(), ev.length);
+
+    // Never parse JSON, change Wi-Fi or render LVGL on the NimBLE host task.
+    xQueueSend(studioRxQueue, &ev, 0);
+  }
+
+ private:
+  uint8_t type;
+};
+
+void resetStudioSettingsToDefaults() {
+  settings.mirrorHud = false;
+  settings.nightMode = true;
+  settings.showRoad = true;
+  settings.showRoute = true;
+  settings.showEta = true;
+  settings.showSpeedLimit = true;
+  settings.alertPolice = true;
+  settings.alertCamera = true;
+  settings.alertCrash = true;
+  settings.alertTraffic = true;
+  settings.alertRoadworks = true;
+  settings.alertHazard = true;
+  settings.autoUpdateCheck = true;
+  settings.brightness = 100;
+  settings.hudStyle = 3;
+  saveAppSettings();
+}
+
+void applyStudioSettings(const String &payload) {
+  JsonDocument d;
+  if (deserializeJson(d, payload)) {
+    studioMessage = "settings_json_error";
+    return;
+  }
+
+  if (!d["m"].isNull()) settings.mirrorHud = (bool)d["m"];
+  if (!d["n"].isNull()) settings.nightMode = (bool)d["n"];
+  if (!d["b"].isNull()) settings.brightness = constrain((int)d["b"], 20, 100);
+  if (!d["road"].isNull()) settings.showRoad = (bool)d["road"];
+  if (!d["route"].isNull()) settings.showRoute = (bool)d["route"];
+  if (!d["eta"].isNull()) settings.showEta = (bool)d["eta"];
+  if (!d["limit"].isNull()) settings.showSpeedLimit = (bool)d["limit"];
+  if (!d["p"].isNull()) settings.alertPolice = (bool)d["p"];
+  if (!d["cam"].isNull()) settings.alertCamera = (bool)d["cam"];
+  if (!d["cr"].isNull()) settings.alertCrash = (bool)d["cr"];
+  if (!d["tr"].isNull()) settings.alertTraffic = (bool)d["tr"];
+  if (!d["wrk"].isNull()) settings.alertRoadworks = (bool)d["wrk"];
+  if (!d["haz"].isNull()) settings.alertHazard = (bool)d["haz"];
+  if (!d["au"].isNull()) settings.autoUpdateCheck = (bool)d["au"];
+
+  // v1.7 still has one production LVGL renderer. Keep the saved value stable.
+  settings.hudStyle = 3;
+
+  saveAppSettings();
+  studioMessage = "settings_saved";
+  hudRenderValid = false;
+  if (hud.valid) drawHud(); else drawWaiting();
+}
+
+void applyStudioWiFi(const String &payload) {
+  JsonDocument d;
+  if (deserializeJson(d, payload)) {
+    studioMessage = "wifi_json_error";
+    return;
+  }
+
+  String ssid = String((const char*)(d["ssid"] | ""));
+  String pass = String((const char*)(d["pass"] | ""));
+  ssid.trim();
+
+  if (!ssid.length() || ssid.length() > 32 || pass.length() > 63) {
+    studioMessage = "wifi_invalid";
+    return;
+  }
+
+  prefs.begin("wazehud", false);
+  prefs.putString("ssid", ssid);
+  prefs.putString("pass", pass);
+  prefs.end();
+
+  wifiSSID = ssid;
+  wifiPASS = pass;
+  studioMessage = "wifi_saved_rebooting";
+  publishStudioState(true);
+  studioRestartAt = millis() + 1200;
+}
+
+void applyStudioCommand(const String &payload) {
+  JsonDocument d;
+  if (deserializeJson(d, payload)) {
+    studioMessage = "command_json_error";
+    return;
+  }
+
+  String cmd = String((const char*)(d["cmd"] | ""));
+  cmd.toLowerCase();
+
+  if (cmd == "refresh") {
+    studioMessage = "ready";
+  } else if (cmd == "check_update") {
+    studioMessage = "checking_update";
+    publishStudioState(true);
+    checkForUpdate();
+    studioMessage = updateAvailable ? "update_available" : updateMessage;
+  } else if (cmd == "ota") {
+    if (otaInProgress || otaRequested) {
+      studioMessage = "ota_busy";
+    } else {
+      if (!updateAvailable && !checkForUpdate()) {
+        studioMessage = updateMessage;
+      } else if (!updateAvailable) {
+        studioMessage = "already_latest";
+      } else {
+        otaStatus = "queued";
+        updateMessage = "Đã nhận lệnh cập nhật v" + latestVersion;
+        otaRequestedAt = millis();
+        otaRequested = true;
+        studioMessage = "ota_queued";
+      }
+    }
+  } else if (cmd == "reboot") {
+    studioMessage = "rebooting";
+    publishStudioState(true);
+    studioRestartAt = millis() + 700;
+  } else if (cmd == "defaults") {
+    resetStudioSettingsToDefaults();
+    studioMessage = "defaults_restored";
+    hudRenderValid = false;
+    if (hud.valid) drawHud(); else drawWaiting();
+  } else {
+    studioMessage = "unknown_command";
+  }
+}
+
+void processStudioInput() {
+  if (!studioRxQueue) return;
+
+  StudioRxEvent ev;
+  bool changed = false;
+
+  while (xQueueReceive(studioRxQueue, &ev, 0) == pdTRUE) {
+    String payload;
+    payload.reserve(ev.length);
+    for (uint16_t i = 0; i < ev.length; ++i) payload += (char)ev.bytes[i];
+
+    if (ev.type == 1) applyStudioSettings(payload);
+    else if (ev.type == 2) applyStudioWiFi(payload);
+    else if (ev.type == 3) applyStudioCommand(payload);
+    changed = true;
+  }
+
+  if (changed) publishStudioState(true);
+}
+
 class HudBleServerCallbacks : public NimBLEServerCallbacks {
   void onConnect(NimBLEServer *server) override {
     bleConnected = true;
@@ -1556,6 +1845,11 @@ void setupBLE() {
     Serial.println("ERROR: cannot create BLE RX queue");
   }
 
+  studioRxQueue = xQueueCreate(8, sizeof(StudioRxEvent));
+  if (studioRxQueue == nullptr) {
+    Serial.println("ERROR: cannot create Studio RX queue");
+  }
+
   NimBLEDevice::init(BLE_DEVICE_NAME);
   NimBLEDevice::setMTU(185);
 
@@ -1585,7 +1879,41 @@ void setupBLE() {
 
   service->start();
 
+  // Separate Web Bluetooth configuration service.
+  NimBLEService *studioService = bleServer->createService(STUDIO_SERVICE_UUID);
+
+  studioInfoCharacteristic = studioService->createCharacteristic(
+    STUDIO_INFO_UUID,
+    NIMBLE_PROPERTY::READ
+  );
+
+  studioSettingsCharacteristic = studioService->createCharacteristic(
+    STUDIO_SETTINGS_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+  );
+  studioSettingsCharacteristic->setCallbacks(new StudioWriteCallbacks(1));
+
+  NimBLECharacteristic *studioWifi = studioService->createCharacteristic(
+    STUDIO_WIFI_UUID,
+    NIMBLE_PROPERTY::WRITE
+  );
+  studioWifi->setCallbacks(new StudioWriteCallbacks(2));
+
+  NimBLECharacteristic *studioCommand = studioService->createCharacteristic(
+    STUDIO_COMMAND_UUID,
+    NIMBLE_PROPERTY::WRITE
+  );
+  studioCommand->setCallbacks(new StudioWriteCallbacks(3));
+
+  studioStatusCharacteristic = studioService->createCharacteristic(
+    STUDIO_STATUS_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+  );
+
+  studioService->start();
+
   bleLocalAddress = String(NimBLEDevice::getAddress().toString().c_str());
+  publishStudioState(false);
 
   // Keep the official HLP service UUID in the advertisement so WazeMod can
   // filter this device directly. Scan response carries the configured name.
@@ -1594,8 +1922,10 @@ void setupBLE() {
   advertising->setScanResponse(true);
   advertising->start();
 
-  Serial.print("NimBLE HLP/1 advertising as WazeHUD, address: ");
+  Serial.print("NimBLE HLP/1 + Studio advertising as WazeHUD, address: ");
   Serial.println(bleLocalAddress);
+  Serial.print("Studio service: ");
+  Serial.println(STUDIO_SERVICE_UUID);
 }
 
 bool checkForUpdate() {
@@ -1828,7 +2158,12 @@ bool installOnlineUpdate() {
       }
       otaPercent = pct;
       updateMessage = "Đang cập nhật " + String(pct) + "%";
+      studioMessage = "ota_writing";
       drawOtaProgressScreen(pct, "DOWNLOADING + INSTALLING");
+      if (millis() - lastStudioStatusNotify >= 500) {
+        lastStudioStatusNotify = millis();
+        publishStudioState(true);
+      }
     } else {
       if (expected > 0 && written >= expected) break;
       if (!http.connected() && expected == 0) break;
@@ -1894,6 +2229,7 @@ bool installOnlineUpdate() {
 
   otaPercent = 100;
   otaStatus = "success";
+  studioMessage = "ota_success";
   updateMessage = "Cập nhật v" + latestVersion + " thành công";
   drawOtaProgressScreen(100, "UPDATE COMPLETE");
 
@@ -2037,16 +2373,8 @@ void setupServer() {
     settings.alertRoadworks = server.hasArg("a_work");
     settings.alertHazard = server.hasArg("a_hazard");
     settings.brightness = constrain(server.arg("bright").toInt(),20,100);
-    prefs.begin("wazehud", false);
-    prefs.putBool("mirror", settings.mirrorHud); prefs.putBool("night", settings.nightMode);
-    prefs.putBool("road", settings.showRoad); prefs.putBool("route", settings.showRoute);
-    prefs.putBool("eta", settings.showEta); prefs.putBool("limit", settings.showSpeedLimit);
-    prefs.putBool("a_police", settings.alertPolice); prefs.putBool("a_camera", settings.alertCamera);
-    prefs.putBool("a_crash", settings.alertCrash); prefs.putBool("a_traffic", settings.alertTraffic);
-    prefs.putBool("a_work", settings.alertRoadworks); prefs.putBool("a_hazard", settings.alertHazard);
-    prefs.putUChar("bright", settings.brightness);
-    prefs.putUChar("layout", settings.hudStyle);
-    prefs.end();
+    saveAppSettings();
+    publishStudioState(true);
     if (hud.valid) drawHud(); else drawWaiting();
     server.sendHeader("Location","/",true); server.send(303,"text/plain","");
   });
@@ -2069,6 +2397,7 @@ void setupServer() {
   server.on("/update-auto", HTTP_POST, []() {
     settings.autoUpdateCheck = server.arg("enabled")=="1";
     prefs.begin("wazehud",false); prefs.putBool("autoupdate",settings.autoUpdateCheck); prefs.end();
+    publishStudioState(true);
     server.send(200,"application/json","{\"ok\":true}");
   });
 
@@ -2122,6 +2451,7 @@ void setupServer() {
     d["ota_status"]=otaStatus; d["ota_message"]=updateMessage; d["ota_percent"]=otaPercent;
     d["ota_free_space"]=(uint32_t)ESP.getFreeSketchSpace();
     d["renderer"]="lvgl"; d["heap_free"]=(uint32_t)ESP.getFreeHeap();
+    d["studio_service"]=STUDIO_SERVICE_UUID; d["studio"]="web-bluetooth";
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
@@ -2344,6 +2674,7 @@ void loop() {
   // Drain GATT bytes outside the Bluetooth callback. This prevents TFT/JSON work
   // from blocking acknowledged BLE writes.
   processBleInput();
+  processStudioInput();
 
   // Send HLP device declaration repeatedly until WazeMod answers with "hi".
   if (bleConnected && !bleHlpReady && millis() - lastBleDevNotify >= 350) {
@@ -2377,6 +2708,19 @@ void loop() {
   if (!otaInProgress) maintainWiFi();
   updateOverspeedEffect();
   lvUiPump();
+
+  // Keep Web Bluetooth Studio state fresh. Notifications are harmless when
+  // no Studio client has subscribed.
+  if (millis() - lastStudioStatusNotify >= 1000) {
+    lastStudioStatusNotify = millis();
+    publishStudioState(true);
+  }
+
+  if (studioRestartAt && (int32_t)(millis() - studioRestartAt) >= 0) {
+    studioRestartAt = 0;
+    delay(80);
+    ESP.restart();
+  }
 
   // Reflect a new DHCP/AP address on the boot/waiting screen.
   String currentIp = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() :
