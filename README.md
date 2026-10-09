@@ -337,3 +337,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Timeout HTTPS dài hơn cho GitHub Release.
 - Serial log HTTP code, Content-Length, số byte đã ghi và mã lỗi `Update`.
 - Web hiển thị nguyên nhân lỗi OTA thay vì chỉ báo chung chung.
+
+
+## Firmware v1.4.2 — Waze alert icon mapping 0..75
+
+- Đối chiếu enum/mapping HLP alert 0..75 với WazeHUD-CYD-2.8 release 1.1.2.
+- Không chép bitmap GPL; icon được vẽ lại bằng primitive Adafruit_GFX để giữ firmware nhẹ và độc lập.
+- Thêm icon riêng cho police, các loại camera, red-light camera, accident, jam, closure, roadwork, pothole, railway, toll, restriction signs, flood/fog/hail/snow/ice, cyclist, emergency, traffic light và các mã HLP mở rộng.
+- SPEED_DROP / END_SPEED_RESTRICTION dùng trực tiếp giá trị `alrV` để vẽ biển tốc độ.
+- Traffic jam dùng `alrS` để hiện mức độ.
+- Bỏ IP khỏi màn HUD chính; IP vẫn còn ở boot/settings để cấu hình OTA.
+- Bỏ ONLINE / NO ALERT khỏi vùng alert khi đang lái.
