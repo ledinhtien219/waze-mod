@@ -1,0 +1,28 @@
+name: Decode v1.7.1 crash
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/decode-v171.yml"
+
+jobs:
+  decode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: e78a8459b89c4350d4e8133327174b005a0ca2fe
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - run: pip install platformio
+      - run: pio run -e esp32dev
+      - name: Decode backtrace
+        run: |
+          TOOL="$HOME/.platformio/packages/toolchain-xtensa-esp32/bin/xtensa-esp32-elf-addr2line"
+          ELF=".pio/build/esp32dev/firmware.elf"
+          "$TOOL" -pfiaC -e "$ELF" \
+            0x40083925 0x400965d1 0x4009c089 0x4017a7dc \
+            0x4017a5fb 0x4013e699 0x400f2a9e 0x400d92d5 \
+            0x400de17c 0x401132ea
