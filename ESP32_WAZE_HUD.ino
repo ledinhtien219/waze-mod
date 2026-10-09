@@ -39,8 +39,9 @@ static const char *STUDIO_SETTINGS_UUID = "8a7e1003-4d6e-4c48-9a9d-484c504c0001"
 static const char *STUDIO_WIFI_UUID     = "8a7e1004-4d6e-4c48-9a9d-484c504c0001";
 static const char *STUDIO_COMMAND_UUID  = "8a7e1005-4d6e-4c48-9a9d-484c504c0001";
 static const char *STUDIO_STATUS_UUID   = "8a7e1006-4d6e-4c48-9a9d-484c504c0001";
+static const char *STUDIO_HUD_UUID      = "8a7e1007-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.7.0";
+static const char *FW_VERSION = "1.7.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -114,6 +115,7 @@ String bleLocalAddress = "";
 NimBLECharacteristic *studioInfoCharacteristic = nullptr;
 NimBLECharacteristic *studioSettingsCharacteristic = nullptr;
 NimBLECharacteristic *studioStatusCharacteristic = nullptr;
+NimBLECharacteristic *studioHudCharacteristic = nullptr;
 
 struct StudioRxEvent {
   uint8_t type; // 1=settings, 2=wifi, 3=command
@@ -328,6 +330,8 @@ void publishStudioState(bool notifyStatus = false);
 String studioSettingsJson();
 String studioInfoJson();
 String studioStatusJson();
+String studioHudJson();
+void publishStudioHud(bool notifyHud = false);
 
 struct HudState {
   TurnType turn = TURN_STRAIGHT;
@@ -850,10 +854,40 @@ void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
   uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
   uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
 
-  tft.startWrite();
-  tft.setAddrWindow(area->x1, area->y1, w, h);
-  tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
-  tft.endWrite();
+  bool mirror = settings.mirrorHud && lvUiMode == LVUI_HUD;
+
+  if (mirror) {
+    // Mirror each LVGL dirty rectangle horizontally for windshield reflection.
+    // Reverse pixels per row, move the dirty rectangle to its reflected X,
+    // write synchronously, then restore the LVGL buffer before flush_ready().
+    for (uint32_t y = 0; y < h; ++y) {
+      lv_color_t *row = colorP + y * w;
+      for (uint32_t x = 0; x < w / 2; ++x) {
+        lv_color_t tmp = row[x];
+        row[x] = row[w - 1 - x];
+        row[w - 1 - x] = tmp;
+      }
+    }
+
+    tft.startWrite();
+    tft.setAddrWindow(319 - area->x2, area->y1, w, h);
+    tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
+    tft.endWrite();
+
+    for (uint32_t y = 0; y < h; ++y) {
+      lv_color_t *row = colorP + y * w;
+      for (uint32_t x = 0; x < w / 2; ++x) {
+        lv_color_t tmp = row[x];
+        row[x] = row[w - 1 - x];
+        row[w - 1 - x] = tmp;
+      }
+    }
+  } else {
+    tft.startWrite();
+    tft.setAddrWindow(area->x1, area->y1, w, h);
+    tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
+    tft.endWrite();
+  }
 
   lv_disp_flush_ready(disp);
 }
@@ -1571,9 +1605,46 @@ String studioStatusJson() {
   d["heap"] = (uint32_t)ESP.getFreeHeap();
   d["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
   d["msg"] = studioMessage;
+  d["upd"] = updateAvailable;
   String out;
   serializeJson(d, out);
   return out;
+}
+
+String studioHudJson() {
+  JsonDocument d;
+  bool fresh = hud.valid && (millis() - hud.updatedAt <= HUD_TIMEOUT_MS);
+  d["v"] = fresh ? 1 : 0;
+  d["s"] = hud.speed;
+  d["l"] = hud.speedLimit;
+  d["o"] = hud.overSpeed ? 1 : 0;
+  d["t"] = (int)hud.turn;
+  d["d"] = hud.distanceM;
+
+  String road = cleanText(hud.road);
+  if (road.length() > 24) road = road.substring(0, 24);
+  d["r"] = road;
+  d["e"] = hud.eta;
+  d["rm"] = max(0, (int)(hud.remainingKm * 1000.0f + 0.5f));
+
+  d["a"] = hud.alertCode;
+  d["ad"] = hud.alertDistanceM;
+  d["av"] = hud.alertValue;
+  d["as"] = hud.alertSeverity;
+  d["ac"] = hud.alertCount;
+  d["nl"] = hud.nextSpeedLimit;
+  d["nd"] = hud.nextSpeedDistanceM;
+
+  String out;
+  serializeJson(d, out);
+  return out;
+}
+
+void publishStudioHud(bool notifyHud) {
+  if (!studioHudCharacteristic) return;
+  String v = studioHudJson();
+  studioHudCharacteristic->setValue(v.c_str());
+  if (notifyHud) studioHudCharacteristic->notify();
 }
 
 void publishStudioState(bool notifyStatus) {
@@ -1590,6 +1661,7 @@ void publishStudioState(bool notifyStatus) {
     studioStatusCharacteristic->setValue(v.c_str());
     if (notifyStatus) studioStatusCharacteristic->notify();
   }
+  publishStudioHud(false);
 }
 
 class StudioWriteCallbacks : public NimBLECharacteristicCallbacks {
@@ -1662,7 +1734,13 @@ void applyStudioSettings(const String &payload) {
   saveAppSettings();
   studioMessage = "settings_saved";
   hudRenderValid = false;
-  if (hud.valid) drawHud(); else drawWaiting();
+  if (hud.valid) {
+    drawHud();
+    lv_obj_invalidate(lv_scr_act());
+    lvUiPump();
+  } else {
+    drawWaiting();
+  }
 }
 
 void applyStudioWiFi(const String &payload) {
@@ -1812,6 +1890,7 @@ void processBleLine(String payload) {
   // applyHudPayload replies to ping before any TFT rendering.
   if (applyHudPayload(payload) && hud.valid) {
     drawHud();
+    publishStudioHud(true);
   }
 }
 
@@ -1908,6 +1987,11 @@ void setupBLE() {
 
   studioStatusCharacteristic = studioService->createCharacteristic(
     STUDIO_STATUS_UUID,
+    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+  );
+
+  studioHudCharacteristic = studioService->createCharacteristic(
+    STUDIO_HUD_UUID,
     NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
   );
 
@@ -2337,10 +2421,6 @@ async function saveAuto(){await fetch("/update-auto?enabled="+(document.getEleme
   html.replace("%AHAZARD%", checked(settings.alertHazard));
   html.replace("%AUTOUPDATE%", checked(settings.autoUpdateCheck));
   html.replace("%BRIGHT%", String(settings.brightness));
-  html.replace("%LAYOUT0%", settings.hudStyle == 0 ? "selected" : "");
-  html.replace("%LAYOUT1%", settings.hudStyle == 1 ? "selected" : "");
-  html.replace("%LAYOUT2%", settings.hudStyle == 2 ? "selected" : "");
-  html.replace("%LAYOUT3%", settings.hudStyle == 3 ? "selected" : "");
   return html;
 }
 
@@ -2356,6 +2436,7 @@ void setupServer() {
       return;
     }
     drawHud();
+    publishStudioHud(true);
     server.send(200, "application/json", "{\"ok\":true}");
   });
 
@@ -2376,7 +2457,13 @@ void setupServer() {
     settings.brightness = constrain(server.arg("bright").toInt(),20,100);
     saveAppSettings();
     publishStudioState(true);
-    if (hud.valid) drawHud(); else drawWaiting();
+    if (hud.valid) {
+      drawHud();
+      lv_obj_invalidate(lv_scr_act());
+      lvUiPump();
+    } else {
+      drawWaiting();
+    }
     server.sendHeader("Location","/",true); server.send(303,"text/plain","");
   });
 
