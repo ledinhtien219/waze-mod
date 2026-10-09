@@ -326,3 +326,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Navigation: ưu tiên mũi tên và khoảng cách đến lần rẽ.
 - Minimal: giao diện thoáng, ít khung, tốc độ + maneuver nổi bật.
 - Giữ IP Wi-Fi/AP trên header và toàn bộ HLP alert / NOW / NEXT logic.
+
+
+## Firmware v1.4.1 — robust online OTA
+
+- OTA không còn tải/ghi firmware ngay bên trong WebServer request.
+- Nút update trả HTTP 202 trước, firmware thực hiện download/write sau trong loop.
+- Thêm `/update-status` và trạng thái queued/downloading/writing/success/failed.
+- Kiểm tra `ESP.getFreeSketchSpace()` trước khi ghi.
+- Timeout HTTPS dài hơn cho GitHub Release.
+- Serial log HTTP code, Content-Length, số byte đã ghi và mã lỗi `Update`.
+- Web hiển thị nguyên nhân lỗi OTA thay vì chỉ báo chung chung.

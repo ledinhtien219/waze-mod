@@ -35,7 +35,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.4.0";
+static const char *FW_VERSION = "1.4.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -86,8 +86,16 @@ struct AppSettings {
 
 String latestVersion = "";
 String latestFirmwareUrl = "";
+size_t latestFirmwareSize = 0;
 String updateMessage = "Chưa kiểm tra";
 bool updateAvailable = false;
+
+volatile bool otaRequested = false;
+bool otaInProgress = false;
+uint32_t otaRequestedAt = 0;
+String otaStatus = "idle";
+size_t otaBytesWritten = 0;
+size_t otaBytesTotal = 0;
 
 void loadAppSettings() {
   prefs.begin("wazehud", true);
@@ -1503,93 +1511,228 @@ void setupBLE() {
 }
 
 bool checkForUpdate() {
+  updateAvailable = false;
+  latestVersion = "";
+  latestFirmwareUrl = "";
+  latestFirmwareSize = 0;
+
   if (WiFi.status() != WL_CONNECTED) {
-    updateMessage = "Wi-Fi chưa kết nối";
+    updateMessage = "Wi-Fi chưa kết nối Internet";
+    Serial.println("OTA check: Wi-Fi not connected");
     return false;
   }
+
   WiFiClientSecure client;
   client.setInsecure();
+  client.setTimeout(20000);
+
   HTTPClient http;
-  http.setUserAgent("ESP32-Waze-HUD");
+  http.setUserAgent("ESP32-Waze-HUD/" + String(FW_VERSION));
+  http.setConnectTimeout(15000);
+  http.setTimeout(20000);
+
   String api = String("https://api.github.com/repos/") + GITHUB_REPO + "/releases/latest";
   if (!http.begin(client, api)) {
-    updateMessage = "Không mở được GitHub";
+    updateMessage = "Không mở được GitHub API";
+    Serial.println("OTA check: http.begin failed");
     return false;
   }
+
   int code = http.GET();
+  Serial.print("OTA check HTTP: ");
+  Serial.println(code);
+
   if (code != HTTP_CODE_OK) {
     updateMessage = "GitHub HTTP " + String(code);
     http.end();
     return false;
   }
-  JsonDocument doc;
-  DeserializationError err = deserializeJson(doc, http.getString());
+
+  String body = http.getString();
   http.end();
+
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, body);
   if (err) {
     updateMessage = "Lỗi dữ liệu phiên bản";
+    Serial.print("OTA check JSON error: ");
+    Serial.println(err.c_str());
     return false;
   }
 
   latestVersion = String((const char*)(doc["tag_name"] | ""));
-  latestVersion.replace("v", "");
-  latestFirmwareUrl = "";
+  if (latestVersion.startsWith("v")) latestVersion.remove(0, 1);
+
   JsonArray assets = doc["assets"].as<JsonArray>();
   for (JsonObject asset : assets) {
     String name = String((const char*)(asset["name"] | ""));
     if (name == "firmware.bin" || name.endsWith("-firmware.bin")) {
       latestFirmwareUrl = String((const char*)(asset["browser_download_url"] | ""));
+      latestFirmwareSize = (size_t)(asset["size"] | 0);
       break;
     }
   }
 
-  updateAvailable = latestVersion.length() && latestVersion != FW_VERSION && latestFirmwareUrl.length();
-  updateMessage = updateAvailable ? ("Có bản " + latestVersion) : "Đang dùng bản mới nhất";
+  if (!latestVersion.length()) {
+    updateMessage = "Release không có version";
+    return false;
+  }
+
+  if (!latestFirmwareUrl.length()) {
+    updateMessage = "Release v" + latestVersion + " chưa có firmware.bin";
+    return false;
+  }
+
+  updateAvailable = latestVersion != FW_VERSION;
+
+  if (updateAvailable) {
+    updateMessage = "Có bản v" + latestVersion;
+  } else {
+    updateMessage = "Đang dùng bản mới nhất v" + String(FW_VERSION);
+  }
+
+  Serial.print("OTA latest: v");
+  Serial.print(latestVersion);
+  Serial.print(", asset bytes=");
+  Serial.println((unsigned long)latestFirmwareSize);
   return true;
 }
 
 bool installOnlineUpdate() {
-  if (!latestFirmwareUrl.length() && !checkForUpdate()) return false;
-  if (!latestFirmwareUrl.length()) {
-    updateMessage = "Release chưa có firmware.bin";
+  otaBytesWritten = 0;
+  otaBytesTotal = 0;
+
+  if (WiFi.status() != WL_CONNECTED) {
+    updateMessage = "OTA lỗi: Wi-Fi đã mất kết nối";
+    otaStatus = "failed";
     return false;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setConnectTimeout(15000);
-  if (!http.begin(client, latestFirmwareUrl)) {
-    updateMessage = "Không mở được firmware";
+  if (!latestFirmwareUrl.length()) {
+    if (!checkForUpdate() || !latestFirmwareUrl.length()) {
+      otaStatus = "failed";
+      return false;
+    }
+  }
+
+  size_t freeSketch = ESP.getFreeSketchSpace();
+  if (latestFirmwareSize > 0 && latestFirmwareSize > freeSketch) {
+    updateMessage = "Firmware quá lớn cho OTA partition";
+    otaStatus = "failed";
+    Serial.print("OTA size too large. asset=");
+    Serial.print((unsigned long)latestFirmwareSize);
+    Serial.print(" free=");
+    Serial.println((unsigned long)freeSketch);
     return false;
   }
+
+  otaStatus = "downloading";
+  updateMessage = "Đang tải firmware v" + latestVersion;
+
+  Serial.print("OTA free sketch space: ");
+  Serial.println((unsigned long)freeSketch);
+  Serial.print("OTA URL: ");
+  Serial.println(latestFirmwareUrl);
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  client.setTimeout(30000);
+
+  HTTPClient http;
+  http.setUserAgent("ESP32-Waze-HUD/" + String(FW_VERSION));
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+  http.setConnectTimeout(20000);
+  http.setTimeout(30000);
+
+  if (!http.begin(client, latestFirmwareUrl)) {
+    updateMessage = "OTA lỗi: không mở được firmware URL";
+    otaStatus = "failed";
+    Serial.println("OTA download: http.begin failed");
+    return false;
+  }
+
+  http.addHeader("Accept-Encoding", "identity");
+
   int code = http.GET();
+  Serial.print("OTA download HTTP: ");
+  Serial.println(code);
+
   if (code != HTTP_CODE_OK) {
-    updateMessage = "Tải firmware lỗi HTTP " + String(code);
+    updateMessage = "OTA tải lỗi HTTP " + String(code);
+    otaStatus = "failed";
     http.end();
     return false;
   }
 
   int total = http.getSize();
-  if (!Update.begin(total > 0 ? (size_t)total : UPDATE_SIZE_UNKNOWN)) {
-    updateMessage = "Không đủ bộ nhớ OTA";
+  otaBytesTotal = total > 0 ? (size_t)total : latestFirmwareSize;
+
+  Serial.print("OTA content length: ");
+  Serial.println(total);
+
+  if (total > 0 && (size_t)total > freeSketch) {
+    updateMessage = "Firmware vượt quá OTA partition";
+    otaStatus = "failed";
     http.end();
     return false;
   }
 
-  size_t written = Update.writeStream(*http.getStreamPtr());
-  bool lengthOK = total <= 0 || written == (size_t)total;
-  bool ok = lengthOK && Update.end(true) && Update.isFinished();
-  http.end();
-
-  if (!ok) {
-    Update.abort();
-    updateMessage = "Ghi firmware thất bại";
+  size_t beginSize = total > 0 ? (size_t)total : UPDATE_SIZE_UNKNOWN;
+  if (!Update.begin(beginSize)) {
+    int errCode = Update.getError();
+    updateMessage = "Update.begin lỗi " + String(errCode);
+    otaStatus = "failed";
+    Serial.print("Update.begin failed, code=");
+    Serial.println(errCode);
+    Update.printError(Serial);
+    http.end();
     return false;
   }
-  updateMessage = "Cập nhật thành công";
+
+  otaStatus = "writing";
+  updateMessage = "Đang ghi firmware...";
+
+  size_t written = Update.writeStream(*http.getStreamPtr());
+  otaBytesWritten = written;
+
+  Serial.print("OTA written: ");
+  Serial.print((unsigned long)written);
+  Serial.print("/");
+  Serial.println(total);
+
+  bool lengthOK = total <= 0 || written == (size_t)total;
+  bool endOK = Update.end(true);
+  bool finished = Update.isFinished();
+
+  http.end();
+
+  if (!lengthOK || !endOK || !finished) {
+    int errCode = Update.getError();
+    updateMessage = "OTA ghi lỗi " + String(errCode) + " (" +
+                    String((unsigned long)written) + "/" +
+                    String(total) + " bytes)";
+    otaStatus = "failed";
+
+    Serial.print("OTA failed: lengthOK=");
+    Serial.print(lengthOK);
+    Serial.print(" endOK=");
+    Serial.print(endOK);
+    Serial.print(" finished=");
+    Serial.print(finished);
+    Serial.print(" error=");
+    Serial.println(errCode);
+    Update.printError(Serial);
+
+    if (!endOK) Update.abort();
+    return false;
+  }
+
+  otaStatus = "success";
+  updateMessage = "Cập nhật v" + latestVersion + " thành công";
+  Serial.println("OTA success; rebooting");
   return true;
 }
+
 
 String checked(bool v) { return v ? "checked" : ""; }
 
@@ -1660,7 +1803,8 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 <script>
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});document.getElementById("testmsg").textContent=await r.text()}
 async function checkUpdate(){let e=document.getElementById("updatemsg");e.textContent="Đang kiểm tra GitHub...";let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;document.getElementById("latest").textContent=j.latest?("v"+j.latest):"--"}
-async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=document.getElementById("updatemsg");e.textContent="Đang tải và ghi firmware...";try{let r=await fetch("/update-online",{method:"POST"});e.textContent=await r.text()}catch(_){e.textContent="Kết nối bị đóng. ESP32 có thể đang khởi động lại."}}
+async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=document.getElementById("updatemsg");e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,1200)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
+async function pollUpdate(){let e=document.getElementById("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,1500)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,2500)}}
 async function saveAuto(){await fetch("/update-auto?enabled="+(document.getElementById("autoupdate").checked?1:0),{method:"POST"})}
 </script></main></body></html>)HTML";
 
@@ -1746,8 +1890,8 @@ void setupServer() {
   });
 
   server.on("/update-check", HTTP_POST, []() {
-    checkForUpdate();
-    JsonDocument d; d["ok"]=true; d["current"]=FW_VERSION; d["latest"]=latestVersion;
+    bool ok = checkForUpdate();
+    JsonDocument d; d["ok"]=ok; d["current"]=FW_VERSION; d["latest"]=latestVersion;
     d["available"]=updateAvailable; d["message"]=updateMessage;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
@@ -1759,15 +1903,43 @@ void setupServer() {
   });
 
   server.on("/update-online", HTTP_POST, []() {
-    if (!updateAvailable && !checkForUpdate()) { server.send(500,"text/plain; charset=utf-8",updateMessage); return; }
-    if (!updateAvailable) { server.send(409,"text/plain; charset=utf-8","Không có bản cập nhật mới."); return; }
-    tft.fillScreen(C_BG);
-    textCentered("UPDATING",0,78,320,3,C_YELLOW);
-    textCentered("DO NOT POWER OFF",0,125,320,2,C_WHITE);
-    bool ok = installOnlineUpdate();
-    if (!ok) { drawWaiting(); server.send(500,"text/plain; charset=utf-8",updateMessage); return; }
-    server.send(200,"text/plain; charset=utf-8","Cập nhật thành công. ESP32 đang khởi động lại...");
-    delay(1200); ESP.restart();
+    if (otaInProgress || otaRequested) {
+      server.send(409, "text/plain; charset=utf-8", "Đang có một phiên cập nhật chạy.");
+      return;
+    }
+
+    if (!updateAvailable && !checkForUpdate()) {
+      server.send(500, "text/plain; charset=utf-8", updateMessage);
+      return;
+    }
+
+    if (!updateAvailable) {
+      server.send(409, "text/plain; charset=utf-8", "Không có bản cập nhật mới.");
+      return;
+    }
+
+    otaStatus = "queued";
+    updateMessage = "Đã nhận lệnh cập nhật v" + latestVersion;
+    otaRequestedAt = millis();
+    otaRequested = true;
+
+    // Return immediately. The actual HTTPS download + flash write starts from
+    // loop(), after the browser has received this response.
+    server.send(202, "text/plain; charset=utf-8",
+                "Đã bắt đầu cập nhật v" + latestVersion + ". Không tắt nguồn.");
+  });
+
+  server.on("/update-status", HTTP_GET, []() {
+    JsonDocument d;
+    d["status"] = otaStatus;
+    d["message"] = updateMessage;
+    d["written"] = (uint32_t)otaBytesWritten;
+    d["total"] = (uint32_t)otaBytesTotal;
+    d["free_ota"] = (uint32_t)ESP.getFreeSketchSpace();
+    String out;
+    serializeJson(d, out);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", out);
   });
 
   server.on("/state", HTTP_GET, []() {
@@ -1776,6 +1948,8 @@ void setupServer() {
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
     d["wifi"]=WiFi.status()==WL_CONNECTED; d["wifi_status"]=(int)WiFi.status(); d["ssid"]=wifiSSID;
     d["wifi_disconnect_reason"]=(int)lastWifiDisconnectReason;
+    d["ota_status"]=otaStatus; d["ota_message"]=updateMessage;
+    d["ota_free_space"]=(uint32_t)ESP.getFreeSketchSpace();
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
@@ -1981,7 +2155,33 @@ void loop() {
   }
 
   server.handleClient();
-  maintainWiFi();
+
+  // Execute OTA outside the WebServer request handler so the browser receives
+  // HTTP 202 first and the server does not hold an open request while flashing.
+  if (otaRequested && !otaInProgress && millis() - otaRequestedAt >= 500) {
+    otaRequested = false;
+    otaInProgress = true;
+
+    tft.fillScreen(C_BG);
+    smoothTextCentered("UPDATING", 0, 95, 320, &FreeSansBold18pt7b, C_YELLOW);
+    smoothTextCentered("DO NOT POWER OFF", 0, 132, 320, &FreeSans9pt7b, C_WHITE);
+    smoothTextCentered("v" + latestVersion, 0, 165, 320, &FreeSans9pt7b, C_BLUE);
+
+    bool ok = installOnlineUpdate();
+    otaInProgress = false;
+
+    if (ok) {
+      smoothTextCentered("DONE - REBOOTING", 0, 203, 320, &FreeSans9pt7b, C_GREEN);
+      delay(800);
+      ESP.restart();
+    } else {
+      Serial.print("OTA final error: ");
+      Serial.println(updateMessage);
+      drawWaiting();
+    }
+  }
+
+  if (!otaInProgress) maintainWiFi();
   updateOverspeedEffect();
 
   // Reflect a new DHCP/AP address on the boot/waiting screen.
