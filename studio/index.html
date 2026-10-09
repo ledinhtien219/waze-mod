@@ -56,6 +56,13 @@ button,input,select{font:inherit}button{cursor:pointer}
 .roadbg{position:absolute;left:0;right:0;bottom:0;height:62%}.roadbg:before{content:"";position:absolute;left:13%;right:13%;bottom:-12%;height:125%;clip-path:polygon(31% 0,69% 0,100% 100%,0 100%);background:linear-gradient(180deg,#111a25,#060a0f)}.roadbg:after{content:"";position:absolute;left:50%;bottom:0;width:3px;height:124px;background:repeating-linear-gradient(180deg,#fff 0 12px,transparent 12px 25px);opacity:.72;transform:translateX(-50%)}
 .hud{position:absolute;inset:0;display:grid;grid-template-columns:29% 43% 28%;padding:11px 16px;z-index:2}.left{text-align:center}.instr{font-size:15px;font-weight:900;font-style:italic}.arrow{font-size:82px;line-height:.87;color:var(--cyan);text-shadow:0 0 18px #27dcff99}.distance{font-size:22px;font-weight:950;border-bottom:2px solid var(--cyan);display:inline-block;padding-bottom:4px}.eta{font-size:15px;font-weight:800;font-style:italic;line-height:1.35;margin-top:9px}.eta span{display:block;font-size:17px}
 .center{text-align:center}.speedRow{display:flex;justify-content:center;align-items:flex-start;gap:18px;margin-top:21px}.speed{font-size:92px;line-height:.82;font-weight:950;letter-spacing:-3px}.unit{font-size:17px;margin-top:6px}.limit{width:73px;height:73px;border-radius:50%;background:#fff;color:#111a24;border:8px solid #ff363d;display:grid;place-items:center;font-size:35px;font-weight:950;box-shadow:0 0 18px #ff3d4544}.lanes{display:flex;justify-content:center;gap:15px;margin-top:13px}.lane{font-size:43px;line-height:1;color:#596a90;opacity:.75}.lane.on{color:#26ddff;opacity:1;text-shadow:0 0 13px #26ddff99}.roadName{font-size:19px;font-weight:900;margin-top:0}.right{text-align:right}.gps{font-size:16px;color:#2be49b;font-weight:900}.traffic{font-size:31px;margin-top:6px;min-height:35px}.alertName{font-size:11px;font-weight:900;margin-top:3px;color:#edf8ff;min-height:14px}.alertDist{font-size:19px;font-weight:950;border-bottom:2px solid #25d6ff;display:inline-block;padding-bottom:4px;min-width:48px}.clock{font-size:19px;font-weight:950;margin-top:20px}
+.themes{display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
+.theme{height:113px;border:1px solid #1b496a;border-radius:10px;padding:6px;background:#04121f;cursor:pointer;position:relative;transition:.15s}
+.theme:hover{border-color:#279dce}.theme.sel{border-color:#29dfff;box-shadow:0 0 0 2px rgba(41,223,255,.18),0 0 16px rgba(41,223,255,.10)}
+.thumb{height:78px;border:1px solid #113750;border-radius:7px;position:relative;overflow:hidden;background:linear-gradient(180deg,#07101b,#02060b)}
+.miniArrow{position:absolute;left:7px;top:5px;font-size:35px;color:#26ddff}.miniSpeed{position:absolute;left:50%;transform:translateX(-50%);top:5px;font-size:37px;font-weight:950}.miniLimit{position:absolute;right:6px;top:6px;width:34px;height:34px;border-radius:50%;border:4px solid #ff333b;background:#fff;color:#111;display:grid;place-items:center;font-size:15px;font-weight:950}
+.themeName{font-size:10px;margin-top:5px;padding-left:20px;white-space:nowrap}.themeRadio{position:absolute;left:7px;bottom:7px;width:14px;height:14px;border:2px solid #8ba7bf;border-radius:50%}.theme.sel .themeRadio{border-color:#25ddff;background:#25ddff;box-shadow:inset 0 0 0 3px #04121f}
+.preview.style-minimal .right,.preview.style-minimal .eta{opacity:.18}.preview.style-sport .speed{color:#39e889}.preview.style-sport{box-shadow:inset 0 0 42px rgba(255,45,55,.12)}.preview.style-classic{filter:grayscale(.82) contrast(1.08)}.preview.style-nav .right{opacity:.45}.preview.style-full{box-shadow:inset 0 0 24px rgba(39,220,255,.12)}
 .singleHud{height:278px;border:1px solid #1a5479;border-radius:11px;background:#04121f;padding:12px;display:grid;grid-template-columns:330px 1fr;gap:18px;align-items:center}.singleScreen{width:330px;height:232px;border:3px solid #2a3037;border-radius:8px;background:#02060b;box-shadow:0 0 0 1px #0e7bb4,0 12px 30px #0008;position:relative;overflow:hidden}.singleScreen .si{position:absolute;left:14px;top:12px;font-size:16px;font-weight:900;font-style:italic}.singleScreen .sa{position:absolute;left:31px;top:39px;font-size:66px;color:#27ddff;line-height:.9;text-shadow:0 0 13px #27ddff88}.singleScreen .sd{position:absolute;left:19px;top:104px;font-size:18px;font-weight:900}.singleScreen .se{position:absolute;left:14px;top:139px;font-size:13px;font-weight:800;line-height:1.45}.singleScreen .ss{position:absolute;left:128px;top:34px;font-size:72px;font-weight:950}.singleScreen .su{position:absolute;left:146px;top:103px;font-size:14px}.singleScreen .sl{position:absolute;left:204px;top:28px;width:68px;height:68px;border:8px solid #ff3b42;border-radius:50%;background:#fff;color:#111;display:grid;place-items:center;font-size:31px;font-weight:950}.singleScreen .sln{position:absolute;left:93px;top:145px;font-size:38px;letter-spacing:6px;color:#596a90}.singleScreen .sln b{color:#28dcff;text-shadow:0 0 11px #28dcff88}.singleScreen .sr{position:absolute;left:111px;bottom:10px;font-size:15px;font-weight:900}.singleScreen .sright{position:absolute;right:11px;top:12px;text-align:right}.singleScreen .sic{font-size:27px}.singleScreen .snm{font-size:10px;font-weight:900}.singleScreen .sds{font-size:14px;font-weight:950;margin-top:2px}.singleScreen .sclock{position:absolute;right:11px;bottom:8px;font-size:15px;font-weight:950}.singleMeta h3{margin:0 0 7px;font-size:20px}.singleMeta p{margin:0 0 10px;color:#91adc4;font-size:12px;line-height:1.55}.singleMeta .fixed{display:inline-flex;padding:5px 10px;border:1px solid #177e60;border-radius:999px;background:#07281f;color:#4df3ae;font-size:11px;font-weight:850}
 .switch{width:44px;height:24px;position:relative;display:inline-block}.switch input{display:none}.switch span{position:absolute;inset:0;border:1px solid #2d5d79;background:#163347;border-radius:999px}.switch span:after{content:"";position:absolute;left:3px;top:3px;width:16px;height:16px;border-radius:50%;background:#b9d1e3;transition:.15s}.switch input:checked+span{background:#1092ed;border-color:#2ed7ff}.switch input:checked+span:after{transform:translateX(19px);background:#fff}
 .hudTopToggle{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:850}
@@ -74,7 +81,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 <body>
 <div id="viewport"><div id="fit"><div id="stage">
 <aside class="sidebar">
- <div class="brand"><div class="logo">◡</div><div><div class="brandName">WAZE <span>HUD</span><span class="version">v1.7.1</span></div><div class="brandSub">SMART NAV DISPLAY</div></div></div>
+ <div class="brand"><div class="logo">◡</div><div><div class="brandName">WAZE <span>HUD</span><span class="version">v1.7.4</span></div><div class="brandSub">SMART NAV DISPLAY</div></div></div>
  <div class="nav">
   <div class="navItem active"><div class="navIcon">⌂</div><div><div class="navTitle">Tổng quan</div><div class="navSub">Trung tâm điều khiển</div></div></div>
   <div class="navItem"><div class="navIcon">▣</div><div><div class="navTitle">Giao diện</div><div class="navSub">Chủ đề & bố cục</div></div></div>
@@ -112,15 +119,14 @@ button,input,select{font:inherit}button{cursor:pointer}
 </section>
 
 <section id="themeCard" class="card">
- <div class="head"><div class="headIcon">▦</div><div><div class="headTitle">Giao diện HUD</div><div class="headSub">Một giao diện duy nhất, tối ưu cho ILI9341 320×240</div></div><div class="headRight"><span class="tag">FULL HUD</span></div></div>
- <div class="singleHud">
-  <div class="singleScreen">
-   <div class="si">Tiếp tục đi thẳng</div><div class="sa">↑</div><div class="sd">24 M</div><div class="se">ETA 20:59<br><b>2.8 KM</b></div>
-   <div class="ss">0</div><div class="su">km/h</div><div class="sl">60</div>
-   <div class="sln">↑┊<b>↑</b>┊↑┊↱</div><div class="sr">Vành đai 3</div>
-   <div class="sright"><div class="sic">📷</div><div class="snm">SPEED CAM</div><div class="sds">30 M</div></div><div class="sclock">09:33</div>
-  </div>
-  <div class="singleMeta"><h3>Full HUD</h3><p>Giao diện duy nhất được tối ưu cho màn ILI9341 320×240. Chỉ hướng, tốc độ, giới hạn tốc độ, tên đường và cảnh báo đều cập nhật theo dữ liệu Waze/HLP/1.</p><span class="fixed">Đang sử dụng · Cố định</span></div>
+ <div class="head"><div class="headIcon">▦</div><div><div class="headTitle">Thư viện giao diện HUD</div><div class="headSub">Chọn phong cách hiển thị phù hợp với bạn</div></div><div class="headRight"><button id="advancedThemeBtn" class="btn">⚙ Tùy chỉnh nâng cao</button></div></div>
+ <div class="themes" id="themeGrid">
+  <div class="theme" data-style="0"><div class="thumb"><span class="miniArrow">↑</span><span class="miniSpeed">0</span><span class="miniLimit">60</span><span style="position:absolute;bottom:5px;left:42px;font-size:9px;color:#7addff">↑ ↑ ↑ · 2.8KM</span></div><div class="themeName">Mặc định (Hiện đại)</div><span class="themeRadio"></span></div>
+  <div class="theme" data-style="2"><div class="thumb"><span class="miniArrow" style="color:#51ef89">↑</span><span class="miniSpeed">0</span><span class="miniLimit">60</span><span style="position:absolute;bottom:5px;left:48px;font-size:9px;color:#51ef89">Tối giản</span></div><div class="themeName">Tối giản</div><span class="themeRadio"></span></div>
+  <div class="theme" data-style="4"><div class="thumb" style="background:radial-gradient(circle at 50% 100%,#501015,#02060b 61%)"><span class="miniArrow" style="color:#51ef89">↑</span><span class="miniSpeed">8</span><span class="miniLimit">80</span><span style="position:absolute;bottom:4px;left:49px;color:#36d8ff;font-size:10px">↑ ↑ ↑</span></div><div class="themeName">Thể thao</div><span class="themeRadio"></span></div>
+  <div class="theme" data-style="1"><div class="thumb" style="background:linear-gradient(145deg,#092139,#09253a 55%,#062019)"><span class="miniArrow">↱</span><span style="position:absolute;left:50%;top:10px;transform:translateX(-50%);font-size:25px">🗺</span><span style="position:absolute;bottom:6px;left:9px;font-weight:900;font-size:11px">2.8 km</span></div><div class="themeName">Bản đồ thu nhỏ</div><span class="themeRadio"></span></div>
+  <div class="theme" data-style="5"><div class="thumb"><span class="miniSpeed">0</span><span style="position:absolute;left:50%;bottom:11px;transform:translateX(-50%);font-size:9px;color:#aaa">km/h</span></div><div class="themeName">Cổ điển</div><span class="themeRadio"></span></div>
+  <div class="theme" data-style="3"><div class="thumb"><span class="miniArrow">↑</span><span class="miniSpeed">0</span><span class="miniLimit">60</span><span style="position:absolute;bottom:5px;left:7px;font-size:8px;color:#6ee1ff">24M · ↑↑↑</span><span style="position:absolute;bottom:5px;right:6px;font-size:8px">09:33</span></div><div class="themeName">Thông tin đầy đủ</div><span class="themeRadio"></span></div>
  </div>
 </section>
 
@@ -134,7 +140,7 @@ button,input,select{font:inherit}button{cursor:pointer}
  <div class="head"><div class="headIcon">ⓘ</div><div><div class="headTitle">Thông tin thiết bị</div></div><div class="headRight"><button id="detailBtn" class="btn">Chi tiết</button></div></div>
  <div>
   <div class="infoRow"><span>Tên thiết bị</span><b id="devName">WAZE HUD</b></div>
-  <div class="infoRow"><span>Phiên bản firmware</span><span><b id="fw">v1.7.1</b> <span id="fwBadge" class="tag">Chưa kiểm tra</span></span></div>
+  <div class="infoRow"><span>Phiên bản firmware</span><span><b id="fw">v1.7.4</b> <span id="fwBadge" class="tag">Chưa kiểm tra</span></span></div>
   <div class="infoRow"><span>Địa chỉ IP</span><b id="ip">--</b></div>
   <div class="infoRow"><span>Địa chỉ MAC</span><b id="mac">--</b></div>
   <div class="infoRow"><span>Dữ liệu Waze</span><b id="hudFresh">Đang chờ</b></div>
@@ -157,13 +163,14 @@ button,input,select{font:inherit}button{cursor:pointer}
 
 <section id="displayCard" class="card">
  <div class="head" style="height:40px"><div class="headIcon" style="width:30px;height:30px">☼</div><div><div class="headTitle" style="font-size:14px">Cài đặt hiển thị</div></div></div>
- <div class="miniRow"><span>Giao diện</span><b>Full HUD cố định</b></div>
  <div class="miniRow"><span>Độ sáng màn hình</span><span class="group"><input id="brightness" class="smallRange" type="range" min="20" max="100" value="80"><b id="brightTxt">80%</b></span></div>
- <div class="miniRow"><span>HUD / Hắt kính lái</span><label class="switch"><input id="mirror" type="checkbox"><span></span></label></div>
+ <div class="miniRow"><span>Chế độ hiển thị</span><select id="styleSelect" class="select"><option value="0">Hiện đại</option><option value="1">Dẫn đường</option><option value="2">Tối giản</option><option value="3">Thông tin đầy đủ</option><option value="4">Thể thao</option><option value="5">Cổ điển</option></select></div>
+ <div class="miniRow"><span>Đơn vị tốc độ</span><select id="unitSelect" class="select"><option value="kmh">km/h</option><option value="mph">mph</option></select></div>
  <div class="miniRow"><span>Giới hạn tốc độ</span><label class="switch"><input id="limit" type="checkbox" checked><span></span></label></div>
  <div class="miniRow"><span>Tên đường</span><label class="switch"><input id="road" type="checkbox" checked><span></span></label></div>
- <div class="miniRow"><span>Tên tuyến</span><label class="switch"><input id="route" type="checkbox" checked><span></span></label></div>
- <div class="miniRow"><span>ETA</span><label class="switch"><input id="eta" type="checkbox" checked><span></span></label></div>
+ <div class="miniRow"><span>Hiển thị làn đường</span><label class="switch"><input id="lanesToggle" type="checkbox" checked><span></span></label></div>
+ <div class="miniRow"><span>HUD / Hắt kính lái</span><label class="switch"><input id="mirror" type="checkbox"><span></span></label></div>
+ <input id="route" type="checkbox" checked hidden><input id="eta" type="checkbox" checked hidden>
 </section>
 
 <section id="alertCard" class="card">
@@ -191,7 +198,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 
 <section id="otaCard" class="card">
  <div class="head" style="height:40px"><div class="headIcon" style="width:30px;height:30px">☁</div><div><div class="headTitle" style="font-size:14px">Cập nhật Firmware</div></div></div>
- <div class="miniRow"><span>Phiên bản hiện tại</span><span><b id="fw2">v1.7.1</b> <span id="otaBadge" class="tag">Chưa kiểm tra</span></span></div>
+ <div class="miniRow"><span>Phiên bản hiện tại</span><span><b id="fw2">v1.7.4</b> <span id="otaBadge" class="tag">Chưa kiểm tra</span></span></div>
  <div class="updateBox"><div id="otaState" class="tag">Chưa kiểm tra</div><div class="progress"><i id="otaBar"></i></div><div style="display:flex;justify-content:space-between;color:#85a4be;font-size:9px"><span id="msg">Bạn đang sử dụng phiên bản mới nhất.</span><b id="pct">0%</b></div></div>
  <button id="checkBtn" class="btn blue" style="width:100%;margin-top:7px;height:29px">⟳ Kiểm tra cập nhật</button>
  <button id="manualBtn" class="btn" style="width:100%;margin-top:5px;height:29px">☁ Tải firmware thủ công (.bin)</button>
@@ -222,6 +229,7 @@ const UUID={service:'8a7e1001-4d6e-4c48-9a9d-484c504c0001',info:'8a7e1002-4d6e-4
 let device,gatt,chars={},connected=false,lastSettings={},lastStatus={},lastInfo={};
 const $=id=>document.getElementById(id),enc=new TextEncoder(),dec=new TextDecoder();
 function fit(){const s=Math.min(window.innerWidth/1672,1);$('stage').style.transform='scale('+s+')';$('fit').style.height=(941*s)+'px'}addEventListener('resize',fit);fit();
+function log(t){console.log('[WazeHUD]',t)}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(window.__to);window.__to=setTimeout(()=>e.classList.remove('show'),2200)}
 function jsonValue(v){
  const raw=dec.decode(v.buffer.slice(v.byteOffset,v.byteOffset+v.byteLength));
@@ -245,10 +253,19 @@ try{
 }
 lastInfo=await readJson(chars.info);lastSettings=await readJson(chars.settings);lastStatus=await readJson(chars.status);
 setConnected(true);applyInfo(lastInfo);applySettings(lastSettings);applyStatus(lastStatus);
-if(chars.hud) applyHud(await readJson(chars.hud)); else { $('hudFresh').textContent='Cần firmware v1.7.1'; toast('Đã kết nối. Cập nhật v1.7.1 để xem HUD realtime.'); }
+if(chars.hud) applyHud(await readJson(chars.hud)); else { $('hudFresh').textContent='Cần firmware v1.7.4'; toast('Đã kết nối. Cập nhật v1.7.4 để xem HUD realtime.'); }
 if(chars.hud) toast('Đã kết nối '+(device.name||'WazeHUD'))}catch(e){setConnected(false);log('BLE/JSON ERROR: '+e.message);toast('Không kết nối được: '+e.message)}}
 function applyInfo(i){$('devName').textContent=i.name||'WAZE HUD';if(i.fw){$('fw').textContent='v'+i.fw;$('fw2').textContent='v'+i.fw}$('mac').textContent=i.mac||'--'}
-function applySettings(s){lastSettings=s;$('mirror').checked=!!s.m;$('mirrorMaster').checked=!!s.m;$('brightness').value=s.b??80;$('brightTxt').textContent=(s.b??80)+'%';$('road').checked=!!s.road;$('route').checked=!!s.route;$('eta').checked=!!s.eta;$('limit').checked=!!s.limit;$('camera').checked=!!s.cam;$('police').checked=!!s.p;$('crash').checked=!!s.cr;$('traffic').checked=!!s.tr;$('work').checked=!!s.wrk;$('hazard').checked=!!s.haz;$('autoUpdate').checked=!!s.au;syncModal()}
+function applySettings(s){
+ lastSettings=s;
+ $('mirror').checked=!!s.m;$('mirrorMaster').checked=!!s.m;
+ $('brightness').value=s.b??80;$('brightTxt').textContent=(s.b??80)+'%';
+ $('road').checked=!!s.road;$('route').checked=s.route!==false;$('eta').checked=s.eta!==false;$('limit').checked=!!s.limit;
+ $('lanesToggle').checked=s.lane!==false;$('unitSelect').value=s.mph?'mph':'kmh';
+ $('styleSelect').value=String(Number.isFinite(Number(s.style))?Number(s.style):3);
+ $('camera').checked=!!s.cam;$('police').checked=!!s.p;$('crash').checked=!!s.cr;$('traffic').checked=!!s.tr;$('work').checked=!!s.wrk;$('hazard').checked=!!s.haz;$('autoUpdate').checked=!!s.au;
+ selectTheme(Number($('styleSelect').value),false);syncModal()
+}
 function applyStatus(s){
  lastStatus=s;
  $('ip').textContent=s.ip||'--';
@@ -333,7 +350,26 @@ function applyHud(x){
 function updateClock(){const d=new Date();$('clockText').textContent=d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit',hour12:false});syncHudReflection()}
 setInterval(updateClock,1000);updateClock();
 
-function currentSettings(){return{m:$('mirror').checked,n:true,b:+$('brightness').value,road:$('road').checked,route:$('route').checked,eta:$('eta').checked,limit:$('limit').checked,p:$('police').checked,cam:$('camera').checked,cr:$('crash').checked,tr:$('traffic').checked,wrk:$('work').checked,haz:$('hazard').checked,au:$('autoUpdate').checked}}
+function selectTheme(style,announce=true){
+ style=Number(style);
+ $('styleSelect').value=String(style);
+ document.querySelectorAll('.theme').forEach(el=>el.classList.toggle('sel',Number(el.dataset.style)===style));
+ const p=document.querySelector('#previewCard .preview');
+ p.classList.remove('style-minimal','style-sport','style-classic','style-nav','style-full');
+ if(style===1)p.classList.add('style-nav');
+ if(style===2)p.classList.add('style-minimal');
+ if(style===3)p.classList.add('style-full');
+ if(style===4)p.classList.add('style-sport');
+ if(style===5)p.classList.add('style-classic');
+ syncHudReflection();
+ if(announce)toast('Đã chọn giao diện · bấm Lưu tất cả cài đặt');
+}
+document.querySelectorAll('.theme').forEach(el=>el.onclick=()=>selectTheme(Number(el.dataset.style)));
+$('styleSelect').onchange=e=>selectTheme(Number(e.target.value));
+$('advancedThemeBtn').onclick=()=>openModal('settingsModal');
+$('unitSelect').onchange=()=>toast('Đơn vị sẽ áp dụng khi bấm Lưu tất cả cài đặt');
+
+function currentSettings(){return{m:$('mirror').checked,n:true,b:+$('brightness').value,road:$('road').checked,route:$('route').checked,eta:$('eta').checked,limit:$('limit').checked,lane:$('lanesToggle').checked,mph:$('unitSelect').value==='mph',style:+$('styleSelect').value,p:$('police').checked,cam:$('camera').checked,cr:$('crash').checked,tr:$('traffic').checked,wrk:$('work').checked,haz:$('hazard').checked,au:$('autoUpdate').checked}}
 async function saveSettings(){if(!requireBle())return;try{const v=currentSettings();await writeJson(chars.settings,v);lastSettings=v;toast('Đã lưu cài đặt vào WazeHUD')}catch(e){toast(e.message)}}
 async function cmd(c){if(!requireBle())return;try{await writeJson(chars.command,{cmd:c});toast('Đã gửi lệnh '+c)}catch(e){toast(e.message)}}
 async function refreshAll(){if(!requireBle())return;try{await writeJson(chars.command,{cmd:'refresh'});lastInfo=await readJson(chars.info);lastSettings=await readJson(chars.settings);lastStatus=await readJson(chars.status);applyInfo(lastInfo);applySettings(lastSettings);applyStatus(lastStatus);if(chars.hud)applyHud(await readJson(chars.hud));toast('Đã làm mới trạng thái')}catch(e){toast(e.message)}}

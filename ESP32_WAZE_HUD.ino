@@ -41,7 +41,7 @@ static const char *STUDIO_COMMAND_UUID  = "8a7e1005-4d6e-4c48-9a9d-484c504c0001"
 static const char *STUDIO_STATUS_UUID   = "8a7e1006-4d6e-4c48-9a9d-484c504c0001";
 static const char *STUDIO_HUD_UUID      = "8a7e1007-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.7.3";
+static const char *FW_VERSION = "1.7.4";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -144,6 +144,8 @@ struct AppSettings {
   bool showRoute = true;
   bool showEta = true;
   bool showSpeedLimit = true;
+  bool showLanes = true;
+  bool useMph = false;
   bool alertPolice = true;
   bool alertCamera = true;
   bool alertCrash = true;
@@ -179,6 +181,8 @@ void loadAppSettings() {
   settings.showRoute = prefs.getBool("route", true);
   settings.showEta = prefs.getBool("eta", true);
   settings.showSpeedLimit = prefs.getBool("limit", true);
+  settings.showLanes = prefs.getBool("lane", true);
+  settings.useMph = prefs.getBool("mph", false);
   settings.alertPolice = prefs.getBool("a_police", true);
   settings.alertCamera = prefs.getBool("a_camera", true);
   settings.alertCrash = prefs.getBool("a_crash", true);
@@ -187,7 +191,7 @@ void loadAppSettings() {
   settings.alertHazard = prefs.getBool("a_hazard", true);
   settings.autoUpdateCheck = prefs.getBool("autoupdate", true);
   settings.brightness = constrain((int)prefs.getUChar("bright", 100), 20, 100);
-  settings.hudStyle = constrain((int)prefs.getUChar("layout", 3), 0, 3);
+  settings.hudStyle = constrain((int)prefs.getUChar("layout", 3), 0, 5);
   bool fullHudMigrated = prefs.getBool("full150", false);
   prefs.end();
 
@@ -209,6 +213,8 @@ void saveAppSettings() {
   prefs.putBool("route", settings.showRoute);
   prefs.putBool("eta", settings.showEta);
   prefs.putBool("limit", settings.showSpeedLimit);
+  prefs.putBool("lane", settings.showLanes);
+  prefs.putBool("mph", settings.useMph);
   prefs.putBool("a_police", settings.alertPolice);
   prefs.putBool("a_camera", settings.alertCamera);
   prefs.putBool("a_crash", settings.alertCrash);
@@ -1382,11 +1388,14 @@ void drawHud() {
 
   lv_label_set_text(uiTitle, maneuverInstruction(hud.turn));
 
-  String spd = String(max(0, hud.speed));
+  int shownSpeed = settings.useMph ? (int)roundf(max(0, hud.speed) * 0.621371f) : max(0, hud.speed);
+  String spd = String(shownSpeed);
   lv_label_set_text(uiSpeed, spd.c_str());
+  lv_label_set_text(uiSpeedUnit, settings.useMph ? "mph" : "km/h");
   lv_obj_set_style_text_color(uiSpeed, hud.overSpeed ? lc(0xFF453A) : lc(0xF5F8FF), 0);
 
-  String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
+  int shownLimit = hud.speedLimit > 0 ? (settings.useMph ? (int)roundf(hud.speedLimit * 0.621371f) : hud.speedLimit) : 0;
+  String limit = shownLimit > 0 ? String(shownLimit) : "--";
   lv_label_set_text(uiLimitText, limit.c_str());
   setHidden(uiLimitCircle, !(settings.showSpeedLimit && hud.speedLimit > 0));
 
@@ -1398,6 +1407,7 @@ void drawHud() {
   lv_label_set_text(uiEta, eta.c_str());
 
   drawLaneOnCanvas();
+  setHidden(uiLaneCanvas, !settings.showLanes);
 
   String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
   if (!road.length() && settings.showRoute) road = cleanText(hud.route);
@@ -1425,10 +1435,41 @@ void drawHud() {
   setHidden(uiNextLimitCircle, !showNext);
   setHidden(uiNextDistance, !showNext);
   if (showNext) {
-    String ns = String(nextLimit);
+    int shownNext = settings.useMph ? (int)roundf(nextLimit * 0.621371f) : nextLimit;
+    String ns = String(shownNext);
     lv_label_set_text(uiNextLimitText, ns.c_str());
     String nd = compactDistance(hud.nextSpeedDistanceM);
     lv_label_set_text(uiNextDistance, nd.c_str());
+  }
+
+  // Six Studio themes use the same proven LVGL object tree, changing emphasis
+  // and information density instead of allocating new screens.
+  const uint8_t style = settings.hudStyle;
+  const bool navFocus = style == 1;
+  const bool minimal = style == 2;
+  const bool full = style == 3;
+  const bool sport = style == 4;
+  const bool classic = style == 5;
+
+  setHidden(uiEtaCaption, minimal || classic);
+  setHidden(uiEta, minimal || classic);
+  setHidden(uiRoad, minimal || sport);
+  setHidden(uiLaneCanvas, !settings.showLanes || classic);
+  if (minimal || classic) {
+    setHidden(uiRemainCaption, true);
+    setHidden(uiRemain, true);
+    setHidden(uiNextCaption, true);
+    setHidden(uiNextLimitCircle, true);
+    setHidden(uiNextDistance, true);
+  }
+  if (navFocus) {
+    setHidden(uiRemainCaption, true);
+    setHidden(uiRemain, true);
+  }
+  if (sport) lv_obj_set_style_text_color(uiSpeed, hud.overSpeed ? lc(0xFF453A) : lc(0x39E889), 0);
+  if (classic) lv_obj_set_style_text_color(uiTitle, lc(0xF5F8FF), 0);
+  if (full) {
+    // Full HUD keeps every enabled data block visible.
   }
 
   String clk = currentClockText();
@@ -1566,6 +1607,8 @@ String studioSettingsJson() {
   d["route"] = settings.showRoute;
   d["eta"] = settings.showEta;
   d["limit"] = settings.showSpeedLimit;
+  d["lane"] = settings.showLanes;
+  d["mph"] = settings.useMph;
   d["p"] = settings.alertPolice;
   d["cam"] = settings.alertCamera;
   d["cr"] = settings.alertCrash;
@@ -1695,6 +1738,8 @@ void resetStudioSettingsToDefaults() {
   settings.showRoute = true;
   settings.showEta = true;
   settings.showSpeedLimit = true;
+  settings.showLanes = true;
+  settings.useMph = false;
   settings.alertPolice = true;
   settings.alertCamera = true;
   settings.alertCrash = true;
@@ -1721,6 +1766,9 @@ void applyStudioSettings(const String &payload) {
   if (!d["route"].isNull()) settings.showRoute = (bool)d["route"];
   if (!d["eta"].isNull()) settings.showEta = (bool)d["eta"];
   if (!d["limit"].isNull()) settings.showSpeedLimit = (bool)d["limit"];
+  if (!d["lane"].isNull()) settings.showLanes = (bool)d["lane"];
+  if (!d["mph"].isNull()) settings.useMph = (bool)d["mph"];
+  if (!d["style"].isNull()) settings.hudStyle = constrain((int)d["style"], 0, 5);
   if (!d["p"].isNull()) settings.alertPolice = (bool)d["p"];
   if (!d["cam"].isNull()) settings.alertCamera = (bool)d["cam"];
   if (!d["cr"].isNull()) settings.alertCrash = (bool)d["cr"];
@@ -1728,9 +1776,6 @@ void applyStudioSettings(const String &payload) {
   if (!d["wrk"].isNull()) settings.alertRoadworks = (bool)d["wrk"];
   if (!d["haz"].isNull()) settings.alertHazard = (bool)d["haz"];
   if (!d["au"].isNull()) settings.autoUpdateCheck = (bool)d["au"];
-
-  // v1.7 still has one production LVGL renderer. Keep the saved value stable.
-  settings.hudStyle = 3;
 
   saveAppSettings();
   studioMessage = "settings_saved";
@@ -2441,7 +2486,6 @@ void setupServer() {
   });
 
   server.on("/settings", HTTP_POST, []() {
-    settings.hudStyle = 3;
     settings.mirrorHud = server.hasArg("mirror");
     settings.nightMode = true;
     settings.showRoad = server.hasArg("road");

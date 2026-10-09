@@ -404,3 +404,11 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Studio characteristics now call NimBLE `setValue(data, length)` explicitly.
 - Prevents trailing buffer bytes from being exposed to Web Bluetooth JSON reads.
 - Studio parser also strips NUL/trailing bytes for compatibility with older 1.7.x firmware.
+
+
+## Firmware v1.7.4 — Studio dashboard becomes the HUD settings UI
+
+- Restores the six-theme HUD library on the main Studio dashboard.
+- Theme choice is saved through BLE in `settings.style`.
+- Adds persisted lane visibility and km/h/mph selection.
+- The same finalized dashboard is now the primary HUD configuration surface; it is no longer a visual-only mock.
