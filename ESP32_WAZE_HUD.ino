@@ -2496,7 +2496,9 @@ bool installOnlineUpdate() {
       uint8_t pct = 1;
       if (expected > 0) {
         // Reserve 100% for successful verification.
-        pct = (uint8_t)min((size_t)99, (written * 99UL) / expected);
+        size_t calcPct = (written * (size_t)99) / expected;
+        if (calcPct > 99) calcPct = 99;
+        pct = (uint8_t)calcPct;
       }
       otaPercent = pct;
       updateMessage = "Đang cập nhật " + String(pct) + "%";
@@ -2573,8 +2575,6 @@ bool installOnlineUpdate() {
   return true;
 }
 
-
-String checked(bool v)
 
 String checked(bool v) { return v ? "checked" : ""; }
 
@@ -2985,8 +2985,6 @@ void setup() {
   Serial.print("Waze HUD IP: ");
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
 }
-
-void drawOverspeedBorder(bool visible) {
 
 void drawOverspeedBorder(bool visible) {
   uint16_t color = visible ? C_RED : C_BG;
