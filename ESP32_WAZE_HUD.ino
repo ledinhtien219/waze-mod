@@ -210,6 +210,7 @@ String currentIpString();
 bool alertEnabled(AlertType a);
 const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
+void drawMiniSpeedLimit(int cx, int cy, int limit, int radius);
 void drawArrow(TurnType turn, int cx, int cy);
 void drawHud();
 void drawWaiting();
