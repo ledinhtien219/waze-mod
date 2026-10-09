@@ -1,0 +1,33 @@
+name: Publish v1.7.5
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-v1.7.5.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build ESP32 firmware
+        run: pio run -e esp32dev
+      - name: Prepare firmware asset
+        run: cp .pio/build/esp32dev/firmware.bin firmware.bin
+      - name: Create v1.7.5 release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.7.5
+          target_commitish: ${{ github.sha }}
+          name: Waze HUD v1.7.5 Reliable OTA
+          generate_release_notes: true
+          files: firmware.bin
