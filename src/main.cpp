@@ -869,6 +869,12 @@ lv_obj_t* makeLabel(lv_obj_t *parent, int x, int y, int w, int h,
   return o;
 }
 
+void setHidden(lv_obj_t *o, bool hidden) {
+  if (!o) return;
+  if (hidden) lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+  else lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+}
+
 lv_obj_t* makeLineRect(lv_obj_t *parent, int x, int y, int w, int h, lv_color_t color) {
   lv_obj_t *o = lv_obj_create(parent);
   lv_obj_remove_style_all(o);
@@ -1289,7 +1295,7 @@ void drawHud() {
 
   String limit = hud.speedLimit > 0 ? String(hud.speedLimit) : "--";
   lv_label_set_text(uiLimitText, limit.c_str());
-  lv_obj_set_flag(uiLimitCircle, LV_OBJ_FLAG_HIDDEN, !(settings.showSpeedLimit && hud.speedLimit > 0));
+  setHidden(uiLimitCircle, !(settings.showSpeedLimit && hud.speedLimit > 0));
 
   drawTurnOnCanvas(uiManeuverCanvas, hud.turn, false);
   String distance = formatDistance(hud.distanceM);
@@ -1307,9 +1313,9 @@ void drawHud() {
 
   drawAlertOnCanvas();
   bool showAlert = hud.alertCode != 0 && alertEnabled(hud.alert);
-  lv_obj_set_flag(uiAlertCanvas, LV_OBJ_FLAG_HIDDEN, !showAlert);
-  lv_obj_set_flag(uiAlertLabel, LV_OBJ_FLAG_HIDDEN, !showAlert);
-  lv_obj_set_flag(uiAlertDistance, LV_OBJ_FLAG_HIDDEN, !showAlert);
+  setHidden(uiAlertCanvas, !showAlert);
+  setHidden(uiAlertLabel, !showAlert);
+  setHidden(uiAlertDistance, !showAlert);
   if (showAlert) {
     String al = String(hlpAlertLabel(hud.alertCode));
     if (al.length() > 10) al = al.substring(0, 10);
@@ -1322,9 +1328,9 @@ void drawHud() {
 
   int nextLimit = hud.nextSpeedLimit > 0 ? hud.nextSpeedLimit : 0;
   bool showNext = settings.showSpeedLimit && nextLimit > 0 && nextLimit != hud.speedLimit;
-  lv_obj_set_flag(uiNextCaption, LV_OBJ_FLAG_HIDDEN, !showNext);
-  lv_obj_set_flag(uiNextLimitCircle, LV_OBJ_FLAG_HIDDEN, !showNext);
-  lv_obj_set_flag(uiNextDistance, LV_OBJ_FLAG_HIDDEN, !showNext);
+  setHidden(uiNextCaption, !showNext);
+  setHidden(uiNextLimitCircle, !showNext);
+  setHidden(uiNextDistance, !showNext);
   if (showNext) {
     String ns = String(nextLimit);
     lv_label_set_text(uiNextLimitText, ns.c_str());
