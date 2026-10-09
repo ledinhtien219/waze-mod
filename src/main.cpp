@@ -42,16 +42,16 @@ Adafruit_ILI9341 tft(&displaySPI, TFT_DC, TFT_CS, TFT_RST);
 
 // LVGL uses a 16-line partial draw buffer: smooth UI without a full framebuffer.
 static lv_disp_draw_buf_t lvDrawBuf;
-static lv_color_t lvBuf1[320 * 16];
+static lv_color_t *lvBuf1 = nullptr;
 static lv_disp_drv_t lvDispDrv;
 
 enum LvUiMode : uint8_t { LVUI_NONE, LVUI_BOOT, LVUI_WAITING, LVUI_HUD, LVUI_OTA };
 static LvUiMode lvUiMode = LVUI_NONE;
 
 // Shared canvases keep memory bounded. They are reused by boot/HUD/OTA screens.
-static lv_color_t lvMainCanvasBuf[72 * 72];
-static lv_color_t lvLaneCanvasBuf[140 * 58];
-static lv_color_t lvAlertCanvasBuf[44 * 44];
+static lv_color_t *lvMainCanvasBuf = nullptr;
+static lv_color_t *lvLaneCanvasBuf = nullptr;
+static lv_color_t *lvAlertCanvasBuf = nullptr;
 
 static lv_obj_t *uiTitle = nullptr;
 static lv_obj_t *uiSpeed = nullptr;
@@ -811,6 +811,17 @@ void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
 }
 
 void lvUiInit() {
+  lvBuf1 = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 16);
+  lvMainCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 72 * 72);
+  lvLaneCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 140 * 58);
+  lvAlertCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 44 * 44);
+
+  if (!lvBuf1 || !lvMainCanvasBuf || !lvLaneCanvasBuf || !lvAlertCanvasBuf) {
+    Serial.println("FATAL: LVGL buffer allocation failed");
+    delay(1000);
+    ESP.restart();
+  }
+
   lv_init();
 
   lv_disp_draw_buf_init(&lvDrawBuf, lvBuf1, nullptr, 320 * 16);
