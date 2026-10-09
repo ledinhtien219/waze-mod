@@ -8,6 +8,8 @@
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSansBold12pt7b.h>
 #include <Fonts/FreeSansBold18pt7b.h>
+#include <Fonts/FreeSansBold24pt7b.h>
+#include <time.h>
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -35,7 +37,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.4.2";
+static const char *FW_VERSION = "1.5.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -81,7 +83,7 @@ struct AppSettings {
   bool alertHazard = true;
   bool autoUpdateCheck = true;
   uint8_t brightness = 100;
-  uint8_t hudStyle = 0; // 0 Balanced, 1 Navigation, 2 Minimal
+  uint8_t hudStyle = 3; // 0 Balanced, 1 Navigation, 2 Minimal, 3 Full HUD
 } settings;
 
 String latestVersion = "";
@@ -113,8 +115,18 @@ void loadAppSettings() {
   settings.alertHazard = prefs.getBool("a_hazard", true);
   settings.autoUpdateCheck = prefs.getBool("autoupdate", true);
   settings.brightness = constrain((int)prefs.getUChar("bright", 100), 20, 100);
-  settings.hudStyle = constrain((int)prefs.getUChar("layout", 0), 0, 2);
+  settings.hudStyle = constrain((int)prefs.getUChar("layout", 3), 0, 3);
+  bool fullHudMigrated = prefs.getBool("full150", false);
   prefs.end();
+
+  // v1.5.0 switches existing devices to the finalized Full HUD exactly once.
+  if (!fullHudMigrated) {
+    settings.hudStyle = 3;
+    prefs.begin("wazehud", false);
+    prefs.putUChar("layout", 3);
+    prefs.putBool("full150", true);
+    prefs.end();
+  }
 }
 
 
@@ -212,6 +224,8 @@ const char* alertLabel(AlertType a);
 void drawAlertGlyph(AlertType a, int cx, int cy);
 void drawMiniSpeedLimit(int cx, int cy, int limit, int radius);
 void drawArrow(TurnType turn, int cx, int cy);
+void drawLaneGuidance();
+String currentClockText();
 void drawHud();
 void drawWaiting();
 void processBleInput();
@@ -247,6 +261,10 @@ AppSettings renderedSettings;
 bool hudRenderValid = false;
 bool renderedLinkLost = false;
 String renderedMainIp = "";
+String renderedClock = "";
+bool renderedBleState = false;
+bool renderedWifiState = false;
+bool ntpConfigured = false;
 bool overspeedBorderVisible = false;
 uint32_t lastOverspeedBlink = 0;
 
@@ -260,6 +278,9 @@ const uint16_t C_DARK    = 0x0841;
 const uint16_t C_PANEL   = 0x0863;
 const uint16_t C_GREY    = 0x8410;
 const uint16_t C_GREEN   = 0x07E0;
+const uint16_t C_CYAN    = 0x07FF;
+const uint16_t C_LANE_DIM = 0x2104;
+const uint16_t C_LINE_DIM = 0x18E3;
 
 String cleanText(String s) {
   return normalizeRoadName(s);
@@ -1391,33 +1412,205 @@ void drawArrow(TurnType turn, int cx, int cy) {
   tft.fillTriangle(cx, cy - 34, cx - 15, cy - 12, cx + 15, cy - 12, c);
 }
 
+const char* maneuverInstruction(TurnType turn) {
+  switch (turn) {
+    case TURN_LEFT: return "Re trai";
+    case TURN_RIGHT: return "Re phai";
+    case TURN_SLIGHT_LEFT: return "Chech trai";
+    case TURN_SLIGHT_RIGHT: return "Chech phai";
+    case TURN_SHARP_LEFT: return "Cua gap trai";
+    case TURN_SHARP_RIGHT: return "Cua gap phai";
+    case TURN_KEEP_LEFT: return "Giu trai";
+    case TURN_KEEP_RIGHT: return "Giu phai";
+    case TURN_EXIT_LEFT: return "Ra loi trai";
+    case TURN_EXIT_RIGHT: return "Ra loi phai";
+    case TURN_UTURN: return "Quay dau";
+    case TURN_ROUNDABOUT: return "Vao vong xuyen";
+    case TURN_ARRIVE: return "Den noi";
+    default: return "Tiep tuc di thang";
+  }
+}
+
+String currentClockText() {
+  struct tm ti;
+  if (getLocalTime(&ti, 5)) {
+    char buf[6];
+    strftime(buf, sizeof(buf), "%H:%M", &ti);
+    return String(buf);
+  }
+  return "--:--";
+}
+
+bool turnIsLeft(TurnType t) {
+  return t == TURN_LEFT || t == TURN_SLIGHT_LEFT || t == TURN_SHARP_LEFT ||
+         t == TURN_KEEP_LEFT || t == TURN_EXIT_LEFT || t == TURN_UTURN;
+}
+
+bool turnIsRight(TurnType t) {
+  return t == TURN_RIGHT || t == TURN_SLIGHT_RIGHT || t == TURN_SHARP_RIGHT ||
+         t == TURN_KEEP_RIGHT || t == TURN_EXIT_RIGHT;
+}
+
+void drawCompactLaneArrow(TurnType turn, int cx, int cy, uint16_t color, bool active) {
+  int thick = active ? 6 : 4;
+
+  auto vbar = [&](int x, int y, int h) {
+    tft.fillRect(x - thick/2, y, thick, h, color);
+  };
+
+  if (turn == TURN_STRAIGHT || turn == TURN_ARRIVE) {
+    vbar(cx, cy - 2, 26);
+    int hw = active ? 9 : 7;
+    tft.fillTriangle(cx, cy - 17, cx - hw, cy - 1, cx + hw, cy - 1, color);
+    return;
+  }
+
+  if (turnIsLeft(turn) && turn != TURN_UTURN) {
+    vbar(cx + 5, cy + 1, 22);
+    tft.fillRect(cx - 13, cy + 1, 20, thick, color);
+    tft.fillTriangle(cx - 19, cy + 3, cx - 8, cy - 6, cx - 8, cy + 12, color);
+    return;
+  }
+
+  if (turnIsRight(turn)) {
+    vbar(cx - 5, cy + 1, 22);
+    tft.fillRect(cx - 5, cy + 1, 20, thick, color);
+    tft.fillTriangle(cx + 20, cy + 3, cx + 9, cy - 6, cx + 9, cy + 12, color);
+    return;
+  }
+
+  if (turn == TURN_UTURN) {
+    tft.drawCircle(cx, cy + 2, 10, color);
+    tft.drawCircle(cx, cy + 2, 9, color);
+    vbar(cx + 9, cy + 1, 22);
+    tft.fillTriangle(cx - 15, cy + 2, cx - 5, cy - 6, cx - 5, cy + 10, color);
+    return;
+  }
+
+  if (turn == TURN_ROUNDABOUT) {
+    tft.drawCircle(cx, cy + 3, 11, color);
+    tft.drawCircle(cx, cy + 3, 10, color);
+    tft.fillTriangle(cx + 12, cy - 5, cx + 20, cy + 3, cx + 11, cy + 5, color);
+    return;
+  }
+
+  // Fallback.
+  vbar(cx, cy - 2, 26);
+  tft.fillTriangle(cx, cy - 17, cx - 8, cy - 1, cx + 8, cy - 1, color);
+}
+
+void drawLaneGuidance() {
+  // Full HUD lane strip: active route is bright cyan; alternatives are heavily dimmed.
+  tft.fillRect(96, 146, 146, 70, C_BG);
+
+  TurnType lanes[4] = {TURN_STRAIGHT, TURN_STRAIGHT, TURN_STRAIGHT, TURN_RIGHT};
+  int activeIndex = 1;
+
+  if (turnIsLeft(hud.turn)) {
+    lanes[0] = hud.turn;
+    lanes[1] = TURN_STRAIGHT;
+    lanes[2] = TURN_STRAIGHT;
+    lanes[3] = TURN_RIGHT;
+    activeIndex = 0;
+  } else if (turnIsRight(hud.turn)) {
+    lanes[0] = TURN_STRAIGHT;
+    lanes[1] = TURN_STRAIGHT;
+    lanes[2] = TURN_STRAIGHT;
+    lanes[3] = hud.turn;
+    activeIndex = 3;
+  } else if (hud.turn == TURN_ROUNDABOUT || hud.turn == TURN_ARRIVE) {
+    lanes[1] = hud.turn;
+    activeIndex = 1;
+  } else {
+    lanes[1] = hud.turn;
+    activeIndex = 1;
+  }
+
+  const int xs[4] = {112, 148, 184, 220};
+
+  // Lane separators.
+  for (int i = 0; i < 3; ++i) {
+    int x = 130 + i * 36;
+    for (int y = 157; y <= 207; y += 11) {
+      tft.drawFastVLine(x, y, 6, C_LINE_DIM);
+    }
+  }
+
+  // Draw inactive first so active arrow is visually dominant.
+  for (int i = 0; i < 4; ++i) {
+    if (i == activeIndex) continue;
+    drawCompactLaneArrow(lanes[i], xs[i], 177, C_LANE_DIM, false);
+  }
+
+  // Subtle cyan under-glow + crisp active arrow.
+  drawCompactLaneArrow(lanes[activeIndex], xs[activeIndex], 177, C_BLUE2, true);
+  drawCompactLaneArrow(lanes[activeIndex], xs[activeIndex], 176, C_CYAN, true);
+}
+
+void drawSmallStatusIcons() {
+  // BLE indicator.
+  uint16_t bleColor = bleConnected ? C_GREEN : C_LANE_DIM;
+  tft.fillCircle(286, 12, 3, bleColor);
+
+  // Wi-Fi bars.
+  uint16_t wifiColor = WiFi.status() == WL_CONNECTED ? C_GREEN : C_LANE_DIM;
+  for (int i = 0; i < 4; ++i) {
+    int h = 4 + i * 3;
+    tft.fillRect(296 + i * 5, 19 - h, 3, h, wifiColor);
+  }
+}
+
+void drawRouteGlyph(int cx, int cy, uint16_t color) {
+  tft.drawLine(cx - 11, cy + 10, cx - 5, cy - 6, color);
+  tft.drawLine(cx - 5, cy - 6, cx + 2, cy - 11, color);
+  tft.drawLine(cx + 2, cy - 11, cx + 10, cy + 7, color);
+  tft.drawLine(cx - 5, cy + 10, cx, cy - 2, color);
+  tft.drawLine(cx, cy - 2, cx + 6, cy - 6, color);
+  tft.drawLine(cx + 6, cy - 6, cx + 12, cy + 9, color);
+}
+
 void drawStaticFrame() {
   tft.fillScreen(C_BG);
 
   if (settings.hudStyle == 0) {
-    // Balanced
     tft.drawFastHLine(8, 34, 304, C_DARK);
     tft.drawRoundRect(6,   44, 88, 146, 10, C_DARK);
     tft.drawRoundRect(100, 44, 124, 146, 10, C_BLUE2);
     tft.drawRoundRect(230, 44, 84, 146, 10, C_DARK);
     tft.drawFastHLine(8, 198, 304, C_DARK);
   } else if (settings.hudStyle == 1) {
-    // Navigation focus
     tft.drawFastHLine(8, 39, 304, C_DARK);
     tft.drawRoundRect(6,   48, 78, 142, 10, C_DARK);
     tft.drawRoundRect(90,  48, 148, 142, 12, C_BLUE2);
     tft.drawRoundRect(244, 48, 70, 142, 10, C_DARK);
     tft.drawFastHLine(8, 199, 304, C_DARK);
-  } else {
-    // Minimal
+  } else if (settings.hudStyle == 2) {
     tft.drawFastHLine(8, 31, 304, C_DARK);
     tft.drawFastVLine(103, 39, 153, C_DARK);
     tft.drawFastVLine(238, 39, 153, C_DARK);
     tft.drawFastHLine(8, 199, 304, C_DARK);
+  } else {
+    // Final Full HUD: no card clutter, only thin functional separators.
+    tft.drawFastHLine(6, 36, 308, C_LINE_DIM);
+    tft.drawFastHLine(6, 139, 234, C_LINE_DIM);
+    tft.drawFastHLine(6, 216, 308, C_LINE_DIM);
+    tft.drawFastVLine(94, 42, 94, C_LINE_DIM);
+    tft.drawFastVLine(242, 42, 162, C_LINE_DIM);
+    tft.drawFastHLine(246, 108, 70, C_LINE_DIM);
+    tft.drawFastHLine(246, 153, 70, C_LINE_DIM);
   }
 }
 
 void drawTopPanel() {
+  if (settings.hudStyle == 3) {
+    tft.fillRect(0, 0, 320, 36, C_BG);
+    String title = String(maneuverInstruction(hud.turn));
+    if (title.length() > 22) title = title.substring(0, 22);
+    smoothText(title, 8, 27, &FreeSansBold12pt7b, C_WHITE);
+    drawSmallStatusIcons();
+    return;
+  }
+
   const int headerH = settings.hudStyle == 1 ? 39 : (settings.hudStyle == 2 ? 31 : 34);
   tft.fillRect(0, 0, 320, headerH, C_BG);
 
@@ -1462,6 +1655,34 @@ void drawSpeedPanel() {
   String speed = String(max(0, hud.speed));
   uint16_t speedColor = hud.overSpeed ? C_RED : C_WHITE;
 
+  if (settings.hudStyle == 3) {
+    // Main speed + current limit, matching the finalized dense HUD mockup.
+    tft.fillRect(95, 38, 146, 99, C_BG);
+
+    // Big current speed.
+    tft.setFont(&FreeSansBold24pt7b);
+    tft.setTextColor(speedColor);
+    int16_t x1,y1; uint16_t w,h;
+    tft.getTextBounds(speed, 0, 0, &x1,&y1,&w,&h);
+    tft.setCursor(151 - w/2, 104);
+    tft.print(speed);
+    smoothTextCentered("km/h", 104, 130, 92, &FreeSans9pt7b, C_GREY);
+
+    // Large current speed limit.
+    if (settings.showSpeedLimit && hud.speedLimit > 0) {
+      int cx = 210, cy = 84, r = 33;
+      tft.fillCircle(cx, cy, r, C_RED);
+      tft.fillCircle(cx, cy, r - 6, C_WHITE);
+      String lim = String(hud.speedLimit);
+      tft.setFont(&FreeSansBold18pt7b);
+      tft.setTextColor(ILI9341_BLACK);
+      tft.getTextBounds(lim,0,0,&x1,&y1,&w,&h);
+      tft.setCursor(cx - w/2, cy + h/2 - 2);
+      tft.print(lim);
+    }
+    return;
+  }
+
   if (settings.hudStyle == 0) {
     tft.fillRoundRect(7, 45, 86, 144, 9, C_BG);
     tft.drawRoundRect(6, 44, 88, 146, 10, hud.overSpeed ? C_RED : C_DARK);
@@ -1502,7 +1723,6 @@ void drawSpeedPanel() {
     return;
   }
 
-  // Minimal
   tft.fillRect(0, 32, 102, 166, C_BG);
   smoothTextCentered("SPEED", 0, 54, 102, &FreeSans9pt7b, C_GREY);
   smoothTextCentered(speed, 0, 115, 102, &FreeSansBold18pt7b, speedColor);
@@ -1520,6 +1740,16 @@ void drawSpeedPanel() {
 
 void drawNavPanel() {
   String dist = formatDistance(hud.distanceM);
+
+  if (settings.hudStyle == 3) {
+    // Left maneuver + center lane guidance.
+    tft.fillRect(0, 38, 93, 100, C_BG);
+    drawArrow(hud.turn, 45, 77);
+    smoothTextCentered(dist, 2, 131, 89, &FreeSansBold12pt7b, C_WHITE);
+
+    drawLaneGuidance();
+    return;
+  }
 
   if (settings.hudStyle == 0) {
     tft.fillRoundRect(101, 45, 122, 144, 9, C_BG);
@@ -1543,7 +1773,6 @@ void drawNavPanel() {
     return;
   }
 
-  // Minimal
   tft.fillRect(104, 32, 133, 166, C_BG);
   smoothText("NEXT", 114, 54, &FreeSans9pt7b, C_BLUE);
   smoothTextRight(dist, 229, 58, &FreeSansBold12pt7b, C_YELLOW);
@@ -1555,6 +1784,37 @@ void drawNavPanel() {
 }
 
 void drawAlertPanel(bool linkLost) {
+  if (settings.hudStyle == 3) {
+    tft.fillRect(244, 38, 76, 166, C_BG);
+
+    if (linkLost) {
+      smoothTextCentered("LINK", 244, 65, 76, &FreeSans9pt7b, C_RED);
+      smoothTextCentered("LOST", 244, 90, 76, &FreeSansBold12pt7b, C_RED);
+      return;
+    }
+
+    // Top: nearest active Waze alert.
+    if (hud.alertCode != 0 && alertEnabled(hud.alert)) {
+      drawWazeAlertIcon(hud.alertCode, 281, 60);
+      smoothTextCentered(formatDistance(hud.alertDistanceM), 245, 103, 73, &FreeSansBold12pt7b, C_WHITE);
+    }
+
+    // Middle: remaining route distance, with road glyph.
+    drawRouteGlyph(262, 130, C_BLUE);
+    smoothTextRight(String(hud.remainingKm, 1) + " km", 316, 144, &FreeSans9pt7b, C_WHITE);
+
+    // Bottom: next speed-limit change when Waze provides it.
+    int nextLimit = hud.nextSpeedLimit > 0 ? hud.nextSpeedLimit : hud.speedLimit;
+    if (settings.showSpeedLimit && nextLimit > 0) {
+      smoothText("NEXT", 248, 169, &FreeSans9pt7b, C_GREY);
+      drawMiniSpeedLimit(292, 178, nextLimit, 18);
+      if (hud.nextSpeedDistanceM >= 0) {
+        smoothTextCentered(compactDistance(hud.nextSpeedDistanceM), 246, 203, 72, &FreeSans9pt7b, C_GREY);
+      }
+    }
+    return;
+  }
+
   int x = settings.hudStyle == 1 ? 244 : (settings.hudStyle == 2 ? 239 : 230);
   int w = settings.hudStyle == 1 ? 70 : (settings.hudStyle == 2 ? 81 : 84);
   int cy = 77;
@@ -1600,6 +1860,26 @@ void drawAlertPanel(bool linkLost) {
 }
 
 void drawFooterPanel() {
+  if (settings.hudStyle == 3) {
+    // Left: ETA only (battery/voltage intentionally removed).
+    tft.fillRect(0, 140, 94, 100, C_BG);
+    tft.drawFastHLine(6, 139, 88, C_LINE_DIM);
+    smoothText("ETA", 8, 165, &FreeSans9pt7b, C_CYAN);
+    smoothText(settings.showEta ? hud.eta : "--:--", 8, 191, &FreeSansBold12pt7b, C_WHITE);
+
+    // Bottom center: road/route name.
+    tft.fillRect(95, 217, 149, 23, C_BG);
+    String road = settings.showRoad ? normalizeRoadName(hud.road) : "";
+    if (!road.length() && settings.showRoute) road = cleanText(hud.route);
+    if (road.length() > 18) road = road.substring(0, 18);
+    if (road.length()) smoothTextCentered(road, 96, 236, 146, &FreeSans9pt7b, C_WHITE);
+
+    // Bottom right: actual clock from NTP; no IP/status text.
+    tft.fillRect(245, 205, 75, 35, C_BG);
+    smoothTextRight(currentClockText(), 316, 234, &FreeSansBold12pt7b, C_WHITE);
+    return;
+  }
+
   tft.fillRect(0, 199, 320, 41, C_BG);
   tft.drawFastHLine(8, 198, 304, C_DARK);
 
@@ -1633,6 +1913,9 @@ void drawHud() {
   bool topDirty =
     first ||
     hud.road != renderedHud.road ||
+    hud.turn != renderedHud.turn ||
+    (settings.hudStyle == 3 && (bleConnected != renderedBleState ||
+                                (WiFi.status() == WL_CONNECTED) != renderedWifiState)) ||
     settings.showRoad != renderedSettings.showRoad;
 
   bool speedDirty =
@@ -1646,7 +1929,8 @@ void drawHud() {
 
   bool navDirty =
     first ||
-    hud.turn != renderedHud.turn;
+    hud.turn != renderedHud.turn ||
+    (settings.hudStyle == 3 && hud.distanceM != renderedHud.distanceM);
 
   bool alertSettingChanged =
     settings.alertPolice != renderedSettings.alertPolice ||
@@ -1665,29 +1949,43 @@ void drawHud() {
     hud.alertSeverity != renderedHud.alertSeverity ||
     hud.alertDelayMin != renderedHud.alertDelayMin ||
     hud.alertCount != renderedHud.alertCount ||
+    (settings.hudStyle == 3 && (
+      fabsf(hud.remainingKm - renderedHud.remainingKm) > 0.01f ||
+      hud.nextSpeedLimit != renderedHud.nextSpeedLimit ||
+      hud.nextSpeedDistanceM != renderedHud.nextSpeedDistanceM
+    )) ||
     linkLost != renderedLinkLost ||
     alertSettingChanged;
 
+  String clockNow = settings.hudStyle == 3 ? currentClockText() : "";
   bool footerDirty =
     first ||
     fabsf(hud.remainingKm - renderedHud.remainingKm) > 0.01f ||
     hud.eta != renderedHud.eta ||
     hud.route != renderedHud.route ||
+    hud.road != renderedHud.road ||
+    (settings.hudStyle == 3 && clockNow != renderedClock) ||
     settings.showEta != renderedSettings.showEta ||
     settings.showRoute != renderedSettings.showRoute;
 
   if (!topDirty && !speedDirty && !navDirty && !alertDirty && !footerDirty) return;
 
+  // One SPI transaction makes text and vector redraws noticeably cleaner/faster.
+  tft.startWrite();
   if (first) drawStaticFrame();
   if (topDirty) drawTopPanel();
   if (speedDirty) drawSpeedPanel();
   if (navDirty) drawNavPanel();
   if (alertDirty) drawAlertPanel(linkLost);
   if (footerDirty) drawFooterPanel();
+  tft.endWrite();
 
   renderedHud = hud;
   renderedSettings = settings;
   renderedLinkLost = linkLost;
+  renderedClock = clockNow;
+  renderedBleState = bleConnected;
+  renderedWifiState = WiFi.status() == WL_CONNECTED;
   hudRenderValid = true;
 }
 void drawWaiting() {
@@ -2108,7 +2406,7 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 
 <form method="post" action="/settings">
 <div class="card"><h2>Hiển thị HUD</h2>
-<div class="row"><div><b>Kiểu hiển thị</b><div class="sub">Đổi bố cục HUD, lưu qua lần khởi động sau</div></div><select name="layout"><option value="0" %LAYOUT0%>Balanced</option><option value="1" %LAYOUT1%>Navigation</option><option value="2" %LAYOUT2%>Minimal</option></select></div>
+<div class="row"><div><b>Kiểu hiển thị</b><div class="sub">Đổi bố cục HUD, lưu qua lần khởi động sau</div></div><select name="layout"><option value="3" %LAYOUT3%>Full HUD (Chốt)</option><option value="0" %LAYOUT0%>Balanced</option><option value="1" %LAYOUT1%>Navigation</option><option value="2" %LAYOUT2%>Minimal</option></select></div>
 <div class="row"><div><b>Phản chiếu HUD</b><div class="sub">Dành cho hiển thị phản xạ lên kính lái</div></div><input type="checkbox" name="mirror" %MIRROR%></div>
 <div class="row"><div><b>Chế độ ban đêm</b><div class="sub">Nền đen, độ tương phản cao</div></div><input type="checkbox" name="night" %NIGHT%></div>
 <div class="row"><div><b>Độ sáng giao diện</b><div class="sub">Lưu cấu hình mức sáng HUD</div></div><input type="range" name="bright" min="20" max="100" value="%BRIGHT%"></div>
@@ -2185,6 +2483,7 @@ async function saveAuto(){await fetch("/update-auto?enabled="+(document.getEleme
   html.replace("%LAYOUT0%", settings.hudStyle == 0 ? "selected" : "");
   html.replace("%LAYOUT1%", settings.hudStyle == 1 ? "selected" : "");
   html.replace("%LAYOUT2%", settings.hudStyle == 2 ? "selected" : "");
+  html.replace("%LAYOUT3%", settings.hudStyle == 3 ? "selected" : "");
   return html;
 }
 
@@ -2204,7 +2503,7 @@ void setupServer() {
   });
 
   server.on("/settings", HTTP_POST, []() {
-    settings.hudStyle = constrain(server.arg("layout").toInt(), 0, 2);
+    settings.hudStyle = constrain(server.arg("layout").toInt(), 0, 3);
     settings.mirrorHud = server.hasArg("mirror");
     settings.nightMode = server.hasArg("night");
     settings.showRoad = server.hasArg("road");
@@ -2392,6 +2691,10 @@ void maintainWiFi() {
   }
 
   if (status == WL_CONNECTED) {
+    if (!ntpConfigured) {
+      configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+      ntpConfigured = true;
+    }
     if (apMode) {
       // Keep AP alive only until the STA succeeds. This avoids routing
       // confusion while still allowing setup during failures.
@@ -2460,6 +2763,10 @@ void setup() {
   loadAppSettings();
   drawWaiting();
   connectWiFi();
+  if (WiFi.status() == WL_CONNECTED) {
+    configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
+    ntpConfigured = true;
+  }
   setupBLE();
   setupServer();
   drawWaiting();

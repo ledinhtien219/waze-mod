@@ -348,3 +348,16 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Traffic jam dùng `alrS` để hiện mức độ.
 - Bỏ IP khỏi màn HUD chính; IP vẫn còn ở boot/settings để cấu hình OTA.
 - Bỏ ONLINE / NO ALERT khỏi vùng alert khi đang lái.
+
+
+## Firmware v1.5.0 — Final Full HUD
+
+- Thêm style 3 **Full HUD (Chốt)** và migrate một lần để thiết bị hiện style này mặc định.
+- Bố cục bám theo mockup cuối: instruction trên cùng, maneuver + khoảng cách bên trái, tốc độ cực lớn giữa, biển giới hạn tốc độ lớn, alert stack bên phải, ETA/lane/road/clock ở dưới.
+- Bỏ hoàn toàn mục ắc quy / 14.0V.
+- Lane guidance có 4 hướng: hướng maneuver hiện tại sáng cyan; các hướng chưa chọn giảm sáng mạnh bằng dark gray.
+- Sử dụng FreeSansBold24pt cho tốc độ chính và gom redraw trong một SPI transaction để nét/nhanh hơn trên ILI9341.
+- HUD chính không hiện IP / ONLINE / NO ALERT.
+- IP chỉ còn ở màn boot/settings.
+- Clock dùng NTP UTC+7 khi Wi-Fi có Internet.
+- Giữ mapping alert HLP 0..75 và OTA robust từ v1.4.x.
