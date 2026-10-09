@@ -41,7 +41,7 @@ static const char *STUDIO_COMMAND_UUID  = "8a7e1005-4d6e-4c48-9a9d-484c504c0001"
 static const char *STUDIO_STATUS_UUID   = "8a7e1006-4d6e-4c48-9a9d-484c504c0001";
 static const char *STUDIO_HUD_UUID      = "8a7e1007-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.7.1";
+static const char *FW_VERSION = "1.7.2";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -2566,7 +2566,9 @@ void connectWiFi() {
   prefs.end();
 
   WiFi.persistent(false);
-  WiFi.setSleep(false);
+  // Wi-Fi modem sleep MUST stay enabled when NimBLE is active on ESP32.
+  // WIFI_PS_NONE can make coex_enable() abort inside esp_bt_controller_enable().
+  WiFi.setSleep(true);
 
   // Use one reconnect owner only. Arduino auto reconnect + our retry loop can
   // overlap and cause "sta is connecting, cannot set config".
@@ -2585,13 +2587,14 @@ void connectWiFi() {
   WiFi.disconnect(false, false);
   delay(150);
 
+  Serial.println("Wi-Fi power save: MIN_MODEM / coexist-safe");
   Serial.print("Wi-Fi: connecting to ");
   Serial.println(wifiSSID);
 
   WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
 
   uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
     lvUiPump();
     delay(30);
   }
@@ -2699,19 +2702,22 @@ void setup() {
   updateBootProgress(18, "LOADING SETTINGS");
   loadAppSettings();
 
-  updateBootProgress(34, "CONNECTING NETWORK");
+  // Bring BLE up before Wi-Fi. Besides making Studio available earlier, this
+  // avoids enabling the BT controller after Wi-Fi has entered a bad coexistence
+  // power-save state on older ESP32 Arduino/IDF combinations.
+  updateBootProgress(34, "STARTING BLUETOOTH");
+  setupBLE();
+
+  updateBootProgress(52, "CONNECTING NETWORK");
   connectWiFi();
 
   if (WiFi.status() == WL_CONNECTED) {
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
     ntpConfigured = true;
-    updateBootProgress(58, "NETWORK READY");
+    updateBootProgress(72, "NETWORK READY");
   } else {
-    updateBootProgress(58, "SETUP AP READY");
+    updateBootProgress(72, "SETUP AP READY");
   }
-
-  updateBootProgress(72, "STARTING BLUETOOTH");
-  setupBLE();
 
   updateBootProgress(86, "STARTING WEB UI");
   setupServer();

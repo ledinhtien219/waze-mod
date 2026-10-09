@@ -389,3 +389,11 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - LVGL chỉ chạy từ Arduino loop; NimBLE callback không render trực tiếp để tránh cross-task UI access.
 
 - v1.7.1: Studio chỉ còn một giao diện Full HUD; thêm BLE Live HUD characteristic để preview tốc độ/chỉ hướng/cảnh báo trực tiếp từ Waze, sửa HUD mirror và software brightness hoạt động thật, đồng thời giữ tương thích cấu hình với firmware v1.7.0.
+
+
+## Firmware v1.7.2 — ESP32 Wi-Fi/BLE coexistence boot fix
+
+- Sửa boot loop tại `NimBLEDevice::init()` / `coex_core_enable()`.
+- Không còn gọi `WiFi.setSleep(false)`; Wi-Fi modem sleep được giữ bật để ESP32 Wi-Fi + BLE coexistence hoạt động đúng.
+- Khởi tạo BLE/Studio trước Wi-Fi để Web Bluetooth vẫn sẵn sàng ngay cả khi Wi-Fi lỗi hoặc timeout.
+- Giảm thời gian chờ Wi-Fi ban đầu từ 20 giây xuống 8 giây.
