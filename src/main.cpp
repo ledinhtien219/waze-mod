@@ -37,7 +37,7 @@ static const char *BLE_TX_UUID      = "8a7e0002-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_RX_UUID      = "8a7e0003-4d6e-4c48-9a9d-484c504c0001";
 static const char *BLE_CAPS_UUID    = "8a7e0004-4d6e-4c48-9a9d-484c504c0001";
 static const uint32_t HUD_TIMEOUT_MS = 10000;
-static const char *FW_VERSION = "1.5.0";
+static const char *FW_VERSION = "1.5.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 
 SPIClass displaySPI(HSPI);
@@ -98,6 +98,9 @@ uint32_t otaRequestedAt = 0;
 String otaStatus = "idle";
 size_t otaBytesWritten = 0;
 size_t otaBytesTotal = 0;
+volatile uint8_t otaPercent = 0;
+int otaRenderedPercent = -1;
+String otaRenderedStage = "";
 
 void loadAppSettings() {
   prefs.begin("wazehud", true);
@@ -226,6 +229,10 @@ void drawMiniSpeedLimit(int cx, int cy, int limit, int radius);
 void drawArrow(TurnType turn, int cx, int cy);
 void drawLaneGuidance();
 String currentClockText();
+void drawBrandMark(int cx, int cy, int r);
+void drawBootSplash();
+void updateBootProgress(uint8_t percent, const String &stage);
+void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = false);
 void drawHud();
 void drawWaiting();
 void processBleInput();
@@ -735,6 +742,112 @@ void smoothTextRight(const String &s, int rightX, int baseline, const GFXfont *f
   tft.getTextBounds(s, 0, baseline, &x1, &y1, &tw, &th);
   tft.setCursor(rightX - tw, baseline);
   tft.print(s);
+}
+
+void drawBrandMark(int cx, int cy, int r) {
+  // Original WazeHUD navigation mark: a road converging into a forward arrow.
+  int x = cx - r;
+  int y = cy - r;
+  int d = r * 2;
+  int radius = max(5, r / 3);
+
+  tft.fillRoundRect(x, y, d, d, radius, C_PANEL);
+  tft.drawRoundRect(x, y, d, d, radius, C_CYAN);
+
+  // Road edges.
+  tft.drawLine(cx - r/2, cy + r/2, cx - r/5, cy - r/3, C_WHITE);
+  tft.drawLine(cx - r/2 + 1, cy + r/2, cx - r/5 + 1, cy - r/3, C_WHITE);
+  tft.drawLine(cx + r/2, cy + r/2, cx + r/5, cy - r/3, C_WHITE);
+  tft.drawLine(cx + r/2 - 1, cy + r/2, cx + r/5 - 1, cy - r/3, C_WHITE);
+
+  // Center lane / forward arrow.
+  int shaftW = max(3, r / 6);
+  tft.fillRect(cx - shaftW/2, cy - r/6, shaftW, r/2, C_CYAN);
+  tft.fillTriangle(cx, cy - r/2,
+                   cx - r/4, cy - r/7,
+                   cx + r/4, cy - r/7, C_CYAN);
+
+  // Small lane dashes create a recognizable road/HUD identity.
+  for (int yy = cy + r/8; yy < cy + r/2; yy += max(5, r/4)) {
+    tft.drawFastVLine(cx, yy, max(2, r/9), C_WHITE);
+  }
+}
+
+void updateBootProgress(uint8_t percent, const String &stage) {
+  percent = constrain((int)percent, 0, 100);
+
+  // Update only the lower status zone to avoid splash flicker.
+  tft.fillRect(0, 159, 320, 61, C_BG);
+  smoothTextCentered(stage, 0, 180, 320, &FreeSans9pt7b,
+                     percent >= 100 ? C_GREEN : C_GREY);
+
+  const int bx = 38, by = 193, bw = 244, bh = 12;
+  tft.fillRoundRect(bx, by, bw, bh, 6, C_DARK);
+  int fill = (bw - 4) * percent / 100;
+  if (fill > 0) {
+    tft.fillRoundRect(bx + 2, by + 2, fill, bh - 4, 4,
+                      percent >= 100 ? C_GREEN : C_CYAN);
+  }
+
+  smoothTextCentered(String(percent) + "%", 0, 220, 320, &FreeSans9pt7b, C_WHITE);
+}
+
+void drawBootSplash() {
+  tft.fillScreen(C_BG);
+
+  // A subtle top accent makes the startup screen feel like a product, not a debug UI.
+  tft.fillRoundRect(92, 24, 136, 2, 1, C_BLUE2);
+  drawBrandMark(160, 70, 30);
+
+  smoothTextCentered("WAZE HUD", 0, 132, 320, &FreeSansBold18pt7b, C_WHITE);
+  smoothTextCentered("SMART NAV DISPLAY", 0, 154, 320, &FreeSans9pt7b, C_GREY);
+
+  smoothText("v" + String(FW_VERSION), 12, 232, &FreeSans9pt7b, C_GREY);
+  smoothTextRight("ESP32", 308, 232, &FreeSans9pt7b, C_GREY);
+
+  updateBootProgress(5, "POWERING UP");
+}
+
+void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
+  percent = constrain((int)percent, 0, 100);
+
+  if (reset || otaRenderedPercent < 0) {
+    tft.fillScreen(C_BG);
+    drawBrandMark(42, 42, 19);
+
+    smoothText("SYSTEM UPDATE", 72, 38, &FreeSansBold12pt7b, C_WHITE);
+    smoothText("v" + String(FW_VERSION) + "  >  v" + latestVersion,
+               72, 60, &FreeSans9pt7b, C_GREY);
+
+    smoothTextCentered("DO NOT POWER OFF", 0, 218, 320, &FreeSans9pt7b, C_YELLOW);
+    otaRenderedPercent = -1;
+    otaRenderedStage = "";
+  }
+
+  if (stage != otaRenderedStage) {
+    tft.fillRect(0, 82, 320, 28, C_BG);
+    smoothTextCentered(stage, 0, 103, 320, &FreeSans9pt7b,
+                       stage == "UPDATE COMPLETE" ? C_GREEN : C_CYAN);
+    otaRenderedStage = stage;
+  }
+
+  if ((int)percent != otaRenderedPercent) {
+    const int bx = 28, by = 132, bw = 264, bh = 18;
+
+    tft.fillRoundRect(bx, by, bw, bh, 8, C_DARK);
+    int fill = (bw - 4) * percent / 100;
+    if (fill > 0) {
+      tft.fillRoundRect(bx + 2, by + 2, fill, bh - 4, 6,
+                        percent >= 100 ? C_GREEN : C_CYAN);
+    }
+
+    tft.fillRect(0, 158, 320, 40, C_BG);
+    smoothTextCentered(String(percent) + "%", 0, 187, 320,
+                       &FreeSansBold18pt7b,
+                       percent >= 100 ? C_GREEN : C_WHITE);
+
+    otaRenderedPercent = percent;
+  }
 }
 
 void drawTriangleSign(int cx, int cy, int r) {
@@ -2250,6 +2363,7 @@ bool checkForUpdate() {
 bool installOnlineUpdate() {
   otaBytesWritten = 0;
   otaBytesTotal = 0;
+  otaPercent = 0;
 
   if (WiFi.status() != WL_CONNECTED) {
     updateMessage = "OTA lỗi: Wi-Fi đã mất kết nối";
@@ -2277,6 +2391,7 @@ bool installOnlineUpdate() {
 
   otaStatus = "downloading";
   updateMessage = "Đang tải firmware v" + latestVersion;
+  drawOtaProgressScreen(0, "PREPARING UPDATE", true);
 
   Serial.print("OTA free sketch space: ");
   Serial.println((unsigned long)freeSketch);
@@ -2313,20 +2428,21 @@ bool installOnlineUpdate() {
     return false;
   }
 
-  int total = http.getSize();
-  otaBytesTotal = total > 0 ? (size_t)total : latestFirmwareSize;
+  int contentLength = http.getSize();
+  size_t expected = contentLength > 0 ? (size_t)contentLength : latestFirmwareSize;
+  otaBytesTotal = expected;
 
   Serial.print("OTA content length: ");
-  Serial.println(total);
+  Serial.println(contentLength);
 
-  if (total > 0 && (size_t)total > freeSketch) {
+  if (expected > 0 && expected > freeSketch) {
     updateMessage = "Firmware vượt quá OTA partition";
     otaStatus = "failed";
     http.end();
     return false;
   }
 
-  size_t beginSize = total > 0 ? (size_t)total : UPDATE_SIZE_UNKNOWN;
+  size_t beginSize = expected > 0 ? expected : UPDATE_SIZE_UNKNOWN;
   if (!Update.begin(beginSize)) {
     int errCode = Update.getError();
     updateMessage = "Update.begin lỗi " + String(errCode);
@@ -2339,49 +2455,126 @@ bool installOnlineUpdate() {
   }
 
   otaStatus = "writing";
-  updateMessage = "Đang ghi firmware...";
+  updateMessage = "Đang tải và cài đặt...";
+  drawOtaProgressScreen(1, "DOWNLOADING + INSTALLING");
 
-  size_t written = Update.writeStream(*http.getStreamPtr());
+  WiFiClient *stream = http.getStreamPtr();
+  uint8_t buffer[1024];
+  size_t written = 0;
+  bool streamOK = true;
+  uint32_t lastDataAt = millis();
+  uint32_t lastWebAt = 0;
+
+  while ((expected > 0 && written < expected) ||
+         (expected == 0 && http.connected())) {
+    size_t available = stream->available();
+
+    if (available > 0) {
+      size_t want = min(available, sizeof(buffer));
+      if (expected > 0) want = min(want, expected - written);
+
+      size_t got = stream->readBytes(buffer, want);
+      if (got == 0) {
+        delay(1);
+        continue;
+      }
+
+      size_t flashed = Update.write(buffer, got);
+      if (flashed != got) {
+        streamOK = false;
+        Serial.print("OTA Update.write mismatch: ");
+        Serial.print((unsigned long)flashed);
+        Serial.print("/");
+        Serial.println((unsigned long)got);
+        break;
+      }
+
+      written += flashed;
+      otaBytesWritten = written;
+      lastDataAt = millis();
+
+      uint8_t pct = 1;
+      if (expected > 0) {
+        // Reserve 100% for successful verification.
+        pct = (uint8_t)min((size_t)99, (written * 99UL) / expected);
+      }
+      otaPercent = pct;
+      updateMessage = "Đang cập nhật " + String(pct) + "%";
+      drawOtaProgressScreen(pct, "DOWNLOADING + INSTALLING");
+    } else {
+      if (expected > 0 && written >= expected) break;
+      if (!http.connected() && expected == 0) break;
+
+      if (millis() - lastDataAt > 30000) {
+        streamOK = false;
+        updateMessage = "OTA timeout khi tải firmware";
+        Serial.println("OTA stream timeout");
+        break;
+      }
+
+      delay(1);
+    }
+
+    // Keep /update-status responsive during the otherwise blocking OTA stream.
+    if (millis() - lastWebAt >= 120) {
+      lastWebAt = millis();
+      server.handleClient();
+    }
+    yield();
+  }
+
   otaBytesWritten = written;
 
   Serial.print("OTA written: ");
   Serial.print((unsigned long)written);
   Serial.print("/");
-  Serial.println(total);
+  Serial.println((unsigned long)expected);
 
-  bool lengthOK = total <= 0 || written == (size_t)total;
-  bool endOK = Update.end(true);
-  bool finished = Update.isFinished();
+  bool lengthOK = expected == 0 || written == expected;
 
-  http.end();
-
-  if (!lengthOK || !endOK || !finished) {
+  if (!streamOK || !lengthOK) {
     int errCode = Update.getError();
+    Update.abort();
+    http.end();
+
+    otaStatus = "failed";
+    otaPercent = 0;
     updateMessage = "OTA ghi lỗi " + String(errCode) + " (" +
                     String((unsigned long)written) + "/" +
-                    String(total) + " bytes)";
-    otaStatus = "failed";
-
-    Serial.print("OTA failed: lengthOK=");
-    Serial.print(lengthOK);
-    Serial.print(" endOK=");
-    Serial.print(endOK);
-    Serial.print(" finished=");
-    Serial.print(finished);
-    Serial.print(" error=");
-    Serial.println(errCode);
-    Update.printError(Serial);
-
-    if (!endOK) Update.abort();
+                    String((unsigned long)expected) + " bytes)";
+    Serial.println(updateMessage);
     return false;
   }
 
+  drawOtaProgressScreen(99, "VERIFYING FIRMWARE");
+  otaPercent = 99;
+  updateMessage = "Đang xác minh firmware...";
+
+  bool endOK = Update.end(true);
+  bool finished = Update.isFinished();
+  http.end();
+
+  if (!endOK || !finished) {
+    int errCode = Update.getError();
+    otaStatus = "failed";
+    updateMessage = "OTA xác minh lỗi " + String(errCode);
+    Serial.print("OTA verify failed, error=");
+    Serial.println(errCode);
+    Update.printError(Serial);
+    return false;
+  }
+
+  otaPercent = 100;
   otaStatus = "success";
   updateMessage = "Cập nhật v" + latestVersion + " thành công";
+  drawOtaProgressScreen(100, "UPDATE COMPLETE");
+
   Serial.println("OTA success; rebooting");
   return true;
 }
 
+
+String checked(bool v)
 
 String checked(bool v) { return v ? "checked" : ""; }
 
@@ -2399,7 +2592,7 @@ header{display:flex;justify-content:space-between;align-items:center;margin-bott
 input[type=text],input[type=password],input[type=number],select{width:100%;padding:11px;border-radius:10px;border:1px solid #304154;background:#09111a;color:#fff;margin:5px 0}
 input[type=range]{width:150px}input[type=checkbox]{width:22px;height:22px;accent-color:var(--blue)}
 button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:var(--blue);color:white;width:100%;margin-top:8px}.secondary{background:#1a2837}.danger{background:var(--red)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.status{padding:12px;border-radius:12px;background:#09141e;color:var(--muted);margin-top:8px}.ok{color:var(--green)}.warn{color:#ffd34d}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.status{padding:12px;border-radius:12px;background:#09141e;color:var(--muted);margin-top:8px}.ok{color:var(--green)}.warn{color:#ffd34d}.progress{height:10px;background:#09141e;border:1px solid #203142;border-radius:999px;overflow:hidden;margin:10px 0 4px}.progress>div{height:100%;width:0;background:linear-gradient(90deg,var(--blue),var(--cyan));transition:width .25s ease}.pct{text-align:right;color:var(--muted);font-size:12px}
 @media(max-width:560px){.grid{grid-template-columns:1fr}}
 </style></head><body><main>
 <header><div><div class="brand">WAZE <span style="color:var(--cyan)">HUD</span></div><div class="sub">ESP32 DevKit V1 · ILI9341 320×240</div></div><div class="pill">%IP%</div></header>
@@ -2440,6 +2633,7 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 <div class="row"><div><b>Phiên bản online</b></div><b id="latest">%LATEST%</b></div>
 <div class="row"><div><b>Tự kiểm tra khi khởi động</b></div><input id="autoupdate" type="checkbox" %AUTOUPDATE% onchange="saveAuto()"></div>
 <div id="updatemsg" class="status">%UPDATEMSG%</div>
+<div class="progress"><div id="updatebar"></div></div><div id="updatepct" class="pct">0%</div>
 <div class="grid"><button onclick="checkUpdate()">Kiểm tra cập nhật</button><button id="installbtn" class="secondary" onclick="installUpdate()">Tải về & cập nhật</button></div>
 <div class="sub" style="margin-top:8px">Firmware được tải trực tiếp từ GitHub Release của dự án. Không tắt nguồn trong lúc cập nhật.</div>
 </div>
@@ -2452,8 +2646,8 @@ button{border:0;border-radius:11px;padding:12px 14px;font-weight:750;background:
 <script>
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});document.getElementById("testmsg").textContent=await r.text()}
 async function checkUpdate(){let e=document.getElementById("updatemsg");e.textContent="Đang kiểm tra GitHub...";let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;document.getElementById("latest").textContent=j.latest?("v"+j.latest):"--"}
-async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=document.getElementById("updatemsg");e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,1200)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
-async function pollUpdate(){let e=document.getElementById("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,1500)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,2500)}}
+async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=document.getElementById("updatemsg");document.getElementById("updatebar").style.width="0%";document.getElementById("updatepct").textContent="0%";e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,700)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
+async function pollUpdate(){let e=document.getElementById("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));document.getElementById("updatebar").style.width=p+"%";document.getElementById("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){document.getElementById("updatebar").style.width="100%";document.getElementById("updatepct").textContent="100%";e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
 async function saveAuto(){await fetch("/update-auto?enabled="+(document.getElementById("autoupdate").checked?1:0),{method:"POST"})}
 </script></main></body></html>)HTML";
 
@@ -2585,6 +2779,7 @@ void setupServer() {
     d["message"] = updateMessage;
     d["written"] = (uint32_t)otaBytesWritten;
     d["total"] = (uint32_t)otaBytesTotal;
+    d["percent"] = otaPercent;
     d["free_ota"] = (uint32_t)ESP.getFreeSketchSpace();
     String out;
     serializeJson(d, out);
@@ -2598,7 +2793,7 @@ void setupServer() {
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
     d["wifi"]=WiFi.status()==WL_CONNECTED; d["wifi_status"]=(int)WiFi.status(); d["ssid"]=wifiSSID;
     d["wifi_disconnect_reason"]=(int)lastWifiDisconnectReason;
-    d["ota_status"]=otaStatus; d["ota_message"]=updateMessage;
+    d["ota_status"]=otaStatus; d["ota_message"]=updateMessage; d["ota_percent"]=otaPercent;
     d["ota_free_space"]=(uint32_t)ESP.getFreeSketchSpace();
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
@@ -2653,7 +2848,6 @@ void connectWiFi() {
   Serial.println(wifiSSID);
 
   WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
-  drawWaiting();
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) {
@@ -2753,30 +2947,46 @@ void setup() {
   });
 
   displaySPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI, TFT_CS);
-  // ILI9341 normally handles 40 MHz SPI on ESP32; this halves large-region
-  // draw time versus the old 20 MHz setting.
   tft.begin(40000000);
   tft.setRotation(1);
   tft.setTextWrap(false);
-  tft.fillScreen(C_BG);
 
+  drawBootSplash();
+
+  updateBootProgress(18, "LOADING SETTINGS");
   loadAppSettings();
-  drawWaiting();
+
+  updateBootProgress(34, "CONNECTING NETWORK");
   connectWiFi();
+
   if (WiFi.status() == WL_CONNECTED) {
     configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
     ntpConfigured = true;
+    updateBootProgress(58, "NETWORK READY");
+  } else {
+    updateBootProgress(58, "SETUP AP READY");
   }
+
+  updateBootProgress(72, "STARTING BLUETOOTH");
   setupBLE();
+
+  updateBootProgress(86, "STARTING WEB UI");
   setupServer();
-  drawWaiting();
+
   if (settings.autoUpdateCheck && WiFi.status() == WL_CONNECTED) {
+    updateBootProgress(94, "CHECKING UPDATES");
     checkForUpdate();
   }
+
+  updateBootProgress(100, "READY");
+  delay(450);
+  drawWaiting();
 
   Serial.print("Waze HUD IP: ");
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
 }
+
+void drawOverspeedBorder(bool visible) {
 
 void drawOverspeedBorder(bool visible) {
   uint16_t color = visible ? C_RED : C_BG;
@@ -2820,17 +3030,13 @@ void loop() {
     otaRequested = false;
     otaInProgress = true;
 
-    tft.fillScreen(C_BG);
-    smoothTextCentered("UPDATING", 0, 95, 320, &FreeSansBold18pt7b, C_YELLOW);
-    smoothTextCentered("DO NOT POWER OFF", 0, 132, 320, &FreeSans9pt7b, C_WHITE);
-    smoothTextCentered("v" + latestVersion, 0, 165, 320, &FreeSans9pt7b, C_BLUE);
-
+    otaRenderedPercent = -1;
+    otaRenderedStage = "";
     bool ok = installOnlineUpdate();
     otaInProgress = false;
 
     if (ok) {
-      smoothTextCentered("DONE - REBOOTING", 0, 203, 320, &FreeSans9pt7b, C_GREEN);
-      delay(800);
+      delay(1000);
       ESP.restart();
     } else {
       Serial.print("OTA final error: ");

@@ -361,3 +361,14 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - IP chỉ còn ở màn boot/settings.
 - Clock dùng NTP UTC+7 khi Wi-Fi có Internet.
 - Giữ mapping alert HLP 0..75 và OTA robust từ v1.4.x.
+
+
+## Firmware v1.5.1 — branded boot + real OTA progress
+
+- Thêm logo nhận diện WazeHUD nguyên bản bằng vector Adafruit_GFX, không dùng bitmap nặng.
+- Màn khởi động có logo, tên sản phẩm, version và progress theo các bước SETTINGS / NETWORK / BLE / WEB / UPDATE CHECK / READY.
+- OTA chuyển từ `Update.writeStream()` sang stream 1 KB có đo byte thực tế.
+- Màn TFT hiển thị thanh tiến trình OTA thật 0–99%, bước VERIFYING và 100% UPDATE COMPLETE.
+- Trang Web Setting có progress bar và phần trăm OTA đồng bộ qua `/update-status`.
+- Trong khi OTA, firmware vẫn phục vụ `/update-status` để trình duyệt cập nhật tiến trình.
+- Giữ nguyên Full HUD v1.5.0 và toàn bộ HLP alert / Wi-Fi / BLE.
