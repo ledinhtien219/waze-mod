@@ -11,10 +11,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <BLEDevice.h>
-#include <BLEServer.h>
-#include <BLEUtils.h>
-#include <BLE2902.h>
+#include <NimBLEDevice.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -100,7 +97,7 @@ bool apMode = false;
 bool bleConnected = false;
 bool bleHlpReady = false;
 String bleRxBuffer;
-BLECharacteristic *bleNotifyCharacteristic = nullptr;
+NimBLECharacteristic *bleNotifyCharacteristic = nullptr;
 uint32_t lastBleDevNotify = 0;
 String bleLocalAddress = "";
 
@@ -1473,8 +1470,8 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
   lvUiPump();
 }
 
-class HudBleServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer *server) override {
+class HudBleServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer *server) override {
     bleConnected = true;
     bleHlpReady = false;
     bleRxBuffer = "";
@@ -1484,19 +1481,19 @@ class HudBleServerCallbacks : public BLEServerCallbacks {
     Serial.println("BLE HLP client connected");
   }
 
-  void onDisconnect(BLEServer *server) override {
+  void onDisconnect(NimBLEServer *server) override {
     bleConnected = false;
     bleHlpReady = false;
     bleRxBuffer = "";
     if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
     if (!hud.valid) drawWaiting();
-    BLEDevice::getAdvertising()->start();
+    NimBLEDevice::getAdvertising()->start();
     Serial.println("BLE HLP client disconnected; advertising restarted");
   }
 };
 
-class HudBleTxCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *characteristic) override {
+class HudBleTxCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *characteristic) override {
     // HLP/1 requires the GATT callback to return quickly. Copy the ATT chunk
     // into a bounded FreeRTOS queue; framing, JSON parsing and TFT rendering
     // happen later from loop().
@@ -1559,55 +1556,45 @@ void setupBLE() {
     Serial.println("ERROR: cannot create BLE RX queue");
   }
 
-  BLEDevice::init(BLE_DEVICE_NAME);
+  NimBLEDevice::init(BLE_DEVICE_NAME);
+  NimBLEDevice::setMTU(185);
 
-  BLEServer *bleServer = BLEDevice::createServer();
+  NimBLEServer *bleServer = NimBLEDevice::createServer();
   bleServer->setCallbacks(new HudBleServerCallbacks());
 
-  BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
+  NimBLEService *service = bleServer->createService(BLE_SERVICE_UUID);
 
-  // Android -> HUD. WazeMod requires write WITH response.
-  BLECharacteristic *tx = service->createCharacteristic(
+  // Android -> HUD. HLP/1 uses acknowledged writes.
+  NimBLECharacteristic *tx = service->createCharacteristic(
     BLE_TX_UUID,
-    BLECharacteristic::PROPERTY_WRITE
+    NIMBLE_PROPERTY::WRITE
   );
   tx->setCallbacks(new HudBleTxCallbacks());
 
-  // HUD -> Android. WazeMod requires notification + CCCD 0x2902.
+  // HUD -> Android. NimBLE automatically exposes CCCD for NOTIFY.
   bleNotifyCharacteristic = service->createCharacteristic(
     BLE_RX_UUID,
-    BLECharacteristic::PROPERTY_NOTIFY
+    NIMBLE_PROPERTY::NOTIFY
   );
-  bleNotifyCharacteristic->addDescriptor(new BLE2902());
 
-  // Optional capabilities characteristic defined by HLP/1.
-  BLECharacteristic *caps = service->createCharacteristic(
+  NimBLECharacteristic *caps = service->createCharacteristic(
     BLE_CAPS_UUID,
-    BLECharacteristic::PROPERTY_READ
+    NIMBLE_PROPERTY::READ
   );
   caps->setValue("{\"v\":1,\"caps\":{\"transport\":\"ble\",\"maxFrame\":512}}\n");
 
   service->start();
 
-  bleLocalAddress = String(BLEDevice::getAddress().toString().c_str());
+  bleLocalAddress = String(NimBLEDevice::getAddress().toString().c_str());
 
-  // Build the ADV payload explicitly so WazeMod's BLE picker can filter on the
-  // HLP service UUID without depending on automatic payload packing.
-  BLEAdvertisementData advData;
-  advData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
-  advData.setCompleteServices(BLEUUID(BLE_SERVICE_UUID));
-
-  // Keep the name in scan response; ADV remains small and always contains the
-  // full 128-bit HLP UUID used by WazeMod's BLE filter.
-  BLEAdvertisementData scanData;
-  scanData.setName(BLE_DEVICE_NAME);
-
-  BLEAdvertising *advertising = BLEDevice::getAdvertising();
-  advertising->setAdvertisementData(advData);
-  advertising->setScanResponseData(scanData);
+  // Keep the official HLP service UUID in the advertisement so WazeMod can
+  // filter this device directly. Scan response carries the configured name.
+  NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+  advertising->addServiceUUID(BLE_SERVICE_UUID);
+  advertising->setScanResponse(true);
   advertising->start();
 
-  Serial.print("BLE HLP/1 advertising as WazeHUD, address: ");
+  Serial.print("NimBLE HLP/1 advertising as WazeHUD, address: ");
   Serial.println(bleLocalAddress);
 }
 
