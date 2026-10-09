@@ -387,3 +387,5 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - LVGL branch chuyển Bluetooth stack từ Bluedroid BLE Arduino sang NimBLE-Arduino 1.4.3 để giảm flash nhưng giữ nguyên UUID/protocol HLP/1.
 
 - LVGL chỉ chạy từ Arduino loop; NimBLE callback không render trực tiếp để tránh cross-task UI access.
+
+- v1.7.1: Studio chỉ còn một giao diện Full HUD; thêm BLE Live HUD characteristic để preview tốc độ/chỉ hướng/cảnh báo trực tiếp từ Waze, sửa HUD mirror và software brightness hoạt động thật, đồng thời giữ tương thích cấu hình với firmware v1.7.0.
