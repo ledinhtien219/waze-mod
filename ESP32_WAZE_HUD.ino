@@ -305,6 +305,9 @@ String normalizeRoadName(const String &input) {
   return out;
 }
 
+const char* maneuverInstruction(TurnType turn);
+bool turnIsLeft(TurnType t);
+bool turnIsRight(TurnType t);
 TurnType parseTurn(String s);
 AlertType parseAlert(String s);
 TurnType parseHlpTurn(JsonDocument &doc);
