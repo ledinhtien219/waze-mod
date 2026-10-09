@@ -1477,7 +1477,7 @@ class HudBleServerCallbacks : public NimBLEServerCallbacks {
     bleRxBuffer = "";
     if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
     lastBleDevNotify = 0;
-    if (!hud.valid) drawWaiting();
+    wifiUiDirty = true; // UI refresh is deferred to loop(); LVGL stays single-threaded.
     Serial.println("BLE HLP client connected");
   }
 
@@ -1486,7 +1486,7 @@ class HudBleServerCallbacks : public NimBLEServerCallbacks {
     bleHlpReady = false;
     bleRxBuffer = "";
     if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
-    if (!hud.valid) drawWaiting();
+    wifiUiDirty = true; // Never call LVGL directly from the NimBLE host task.
     NimBLEDevice::getAdvertising()->start();
     Serial.println("BLE HLP client disconnected; advertising restarted");
   }
@@ -2121,6 +2121,7 @@ void setupServer() {
     d["wifi_disconnect_reason"]=(int)lastWifiDisconnectReason;
     d["ota_status"]=otaStatus; d["ota_message"]=updateMessage; d["ota_percent"]=otaPercent;
     d["ota_free_space"]=(uint32_t)ESP.getFreeSketchSpace();
+    d["renderer"]="lvgl"; d["heap_free"]=(uint32_t)ESP.getFreeHeap();
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
