@@ -50,6 +50,7 @@ Adafruit_ILI9341 tft(&displaySPI, TFT_DC, TFT_CS, TFT_RST);
 // LVGL uses a 16-line partial draw buffer: smooth UI without a full framebuffer.
 static lv_disp_draw_buf_t lvDrawBuf;
 static lv_color_t *lvBuf1 = nullptr;
+static lv_color_t *lvFlushBuf = nullptr;
 static lv_disp_drv_t lvDispDrv;
 
 enum LvUiMode : uint8_t { LVUI_NONE, LVUI_BOOT, LVUI_WAITING, LVUI_HUD, LVUI_OTA };
@@ -853,52 +854,48 @@ static inline lv_color_t lc(uint32_t rgb) {
 void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colorP) {
   uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
   uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
-
   bool mirror = settings.mirrorHud && lvUiMode == LVUI_HUD;
+  uint8_t brightness = constrain((int)settings.brightness, 20, 100);
+  lv_color_t *out = colorP;
 
-  if (mirror) {
-    // Mirror each LVGL dirty rectangle horizontally for windshield reflection.
-    // Reverse pixels per row, move the dirty rectangle to its reflected X,
-    // write synchronously, then restore the LVGL buffer before flush_ready().
+  // ILI9341 module has no dedicated backlight PWM in this wiring. Apply
+  // brightness in software while flushing LVGL pixels. The same scratch
+  // buffer also handles HUD reflection without mutating LVGL's draw buffer.
+  if ((mirror || brightness < 100) && lvFlushBuf != nullptr) {
     for (uint32_t y = 0; y < h; ++y) {
-      lv_color_t *row = colorP + y * w;
-      for (uint32_t x = 0; x < w / 2; ++x) {
-        lv_color_t tmp = row[x];
-        row[x] = row[w - 1 - x];
-        row[w - 1 - x] = tmp;
+      for (uint32_t x = 0; x < w; ++x) {
+        uint32_t sx = mirror ? (w - 1 - x) : x;
+        uint16_t c = colorP[y * w + sx].full;
+
+        uint16_t r = (c >> 11) & 0x1F;
+        uint16_t g = (c >> 5) & 0x3F;
+        uint16_t b = c & 0x1F;
+        r = (uint16_t)((r * brightness) / 100);
+        g = (uint16_t)((g * brightness) / 100);
+        b = (uint16_t)((b * brightness) / 100);
+
+        lvFlushBuf[y * w + x].full = (uint16_t)((r << 11) | (g << 5) | b);
       }
     }
-
-    tft.startWrite();
-    tft.setAddrWindow(319 - area->x2, area->y1, w, h);
-    tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
-    tft.endWrite();
-
-    for (uint32_t y = 0; y < h; ++y) {
-      lv_color_t *row = colorP + y * w;
-      for (uint32_t x = 0; x < w / 2; ++x) {
-        lv_color_t tmp = row[x];
-        row[x] = row[w - 1 - x];
-        row[w - 1 - x] = tmp;
-      }
-    }
-  } else {
-    tft.startWrite();
-    tft.setAddrWindow(area->x1, area->y1, w, h);
-    tft.writePixels(reinterpret_cast<uint16_t *>(colorP), w * h, true, false);
-    tft.endWrite();
+    out = lvFlushBuf;
   }
+
+  tft.startWrite();
+  tft.setAddrWindow(mirror ? (319 - area->x2) : area->x1, area->y1, w, h);
+  tft.writePixels(reinterpret_cast<uint16_t *>(out), w * h, true, false);
+  tft.endWrite();
 
   lv_disp_flush_ready(disp);
 }
 
 void lvUiInit() {
   lvBuf1 = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 16);
+  lvFlushBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 16);
   lvMainCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 72 * 72);
   lvLaneCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 140 * 58);
   lvAlertCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 44 * 44);
 
-  if (!lvBuf1 || !lvMainCanvasBuf || !lvLaneCanvasBuf || !lvAlertCanvasBuf) {
+  if (!lvBuf1 || !lvFlushBuf || !lvMainCanvasBuf || !lvLaneCanvasBuf || !lvAlertCanvasBuf) {
     Serial.println("FATAL: LVGL buffer allocation failed");
     delay(1000);
     ESP.restart();
