@@ -74,6 +74,15 @@ Firmware BLE lớn hơn giới hạn app mặc định của ESP32. Repo có s�
 4. Khi trạng thái báo **Đã kết nối WAZE-HUD**, dữ liệu điều hướng được gửi qua BLE.
 
 ESP32 advertise BLE với tên `WAZE-HUD`. 
+### Màn hình chờ (đồng hồ)
+
+Khi chưa nhận dữ liệu từ điện thoại (hoặc mất kết nối quá 30 giây), TFT hiển thị màn hình chờ: đồng hồ số 7 đoạn, ngày dương lịch, **âm lịch** (kèm năm Can Chi, tháng nhuận) và **nhiệt độ** ngoài trời.
+
+- Giờ lấy từ NTP qua Wi-Fi (ESP32 không có pin RTC nên cần Wi-Fi/hotspot điện thoại để có giờ).
+- Nhiệt độ lấy từ Open-Meteo (không cần API key), cập nhật 15 phút/lần, chỉ gọi khi đang ở màn hình chờ và chưa kết nối BLE.
+- Web Setting → **Màn hình chờ**: bật/tắt đồng hồ, âm lịch, nhiệt độ và chọn khu vực thời tiết.
+- Âm lịch tính bằng thuật toán Hồ Ngọc Đức (múi giờ UTC+7), không cần tải dữ liệu.
+
 ### Wi-Fi / Web Setting
 
 Lần đầu nếu chưa có Wi-Fi, ESP32 tạo AP:
@@ -420,3 +429,22 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - GitHub Releases API is now a streaming/filter fallback instead of loading the full JSON response into RAM.
 - Semantic version comparison prevents accidental downgrade.
 - Local web UI can upload a `firmware.bin` directly into the OTA partition for recovery.
+
+## Firmware v1.7.6 — data freshness, stale-state fixes, cheaper redraw
+
+- HUD không còn giữ nguyên tốc độ/mũi tên cũ khi mất dữ liệu: sau 3 giây tốc độ chuyển xám, sau 6 giây hiện `LINK LOST` và ẩn giới hạn tốc độ/cảnh báo.
+- Frame HLP/1 `s` được coi là snapshot đầy đủ: `spd`, `lim`, `rm/rkm` thiếu thì về 0 thay vì giữ giá trị cũ; `trn` thiếu hoặc lạ thì hiện đi thẳng thay vì mũi tên cũ.
+- Dùng trường `nav`: khi không dẫn đường, ẩn mũi tên, khoảng cách, ETA, làn đường và quãng đường còn lại.
+- Tốc độ làm tròn (`lroundf`) thay vì cắt phần thập phân.
+- Giới hạn tốc độ kế tiếp chọn thay đổi gần nhất trong `alrs[]` thay vì phần tử đầu tiên.
+- Khoảng cách làm tròn bước 10 m (<200 m) và 50 m (<1 km) để số không nháy liên tục.
+- Mũi tên, làn đường, icon cảnh báo và label chỉ vẽ lại khi dữ liệu đổi (trước đây vẽ lại 4 lần/giây); đổi mirror/độ sáng vẫn repaint toàn màn hình.
+
+## Firmware v1.7.7 — tiếng Việt có dấu, lần rẽ kế tiếp, cài đặt biển báo
+
+- Tên đường và hướng dẫn (`Rẽ trái`, `Chếch phải`, `Vào vòng xuyến`...) hiển thị có dấu bằng font LVGL tự sinh (`vn_font_14.c`, `vn_font_18.c`): ASCII, Latin-1, toàn bộ chữ Việt. Ký tự không có trong font (CJK, emoji...) bị lọc để không hiện ô vuông.
+- Font sinh bằng `tools/gen_fonts.sh` (Python + Pillow, không cần node). Muốn giữ kiểu chữ Montserrat gốc thì dùng `lv_font_conv`, lệnh mẫu nằm trong script.
+- Hiển thị `trn2` (lần rẽ sau lần rẽ kế tiếp) ở góc dưới trái: `Sau: ↱`. Ẩn ở theme Minimal/Classic.
+- Hiển thị số lối ra trong biểu tượng vòng xuyến từ trường HLP `exit` (giả định `exit` là số lối ra vòng xuyến, 1–9).
+- Tách cài đặt **Biển báo** khỏi **Cảnh báo khác**: giới hạn tốc độ sắp tới, cấm rẽ/quay đầu, biển làn, trạm thu phí, đèn giao thông, khu dân cư... Có trong Web Setting và Studio. Mặc định bật.
+
