@@ -78,9 +78,11 @@ static int sbLastMin = -2, sbLastSec = -2, sbLastDay = -2, sbColonOn = -1;
 static String sbLastStatus, sbLastIp;
 static lv_obj_t *sbSeg[4][7];
 static lv_obj_t *sbColon[2];
-static lv_obj_t *sbSec = nullptr, *sbDate = nullptr, *sbDot = nullptr, *sbStatus = nullptr;
+static lv_obj_t *sbSec = nullptr, *sbDate = nullptr, *sbWeekday = nullptr, *sbDot = nullptr, *sbStatus = nullptr;
+static lv_obj_t *sbBarFill = nullptr, *sbMoon = nullptr, *sbWxIcon = nullptr;
+static int sbPeriod = -1, sbIconKey = -99;
 static lv_obj_t *sbLunarDay = nullptr, *sbLunarMonth = nullptr, *sbLunarYear = nullptr;
-static lv_obj_t *sbTemp = nullptr, *sbTempCap = nullptr, *sbHint = nullptr, *sbIp = nullptr;
+static lv_obj_t *sbTemp = nullptr, *sbTempCap = nullptr, *sbIp = nullptr;
 
 // Shared canvases keep memory bounded. They are reused by boot/HUD/OTA screens.
 static lv_color_t *lvMainCanvasBuf = nullptr;
@@ -1117,9 +1119,10 @@ void lvUiClear(LvUiMode mode) {
   sbActive = false;
   for (int d = 0; d < 4; ++d) for (int g = 0; g < 7; ++g) sbSeg[d][g] = nullptr;
   sbColon[0] = sbColon[1] = nullptr;
-  sbSec = sbDate = sbDot = sbStatus = nullptr;
+  sbSec = sbDate = sbWeekday = sbDot = sbStatus = nullptr;
+  sbBarFill = sbMoon = sbWxIcon = nullptr;
   sbLunarDay = sbLunarMonth = sbLunarYear = nullptr;
-  sbTemp = sbTempCap = sbHint = sbIp = nullptr;
+  sbTemp = sbTempCap = sbIp = nullptr;
   uiOtaStage = uiOtaPercent = uiOtaBar = nullptr;
 }
 
@@ -1861,7 +1864,7 @@ static bool wxTried = false, wxDirty = true;
 
 static const char *wxCondText(int c) {
   if (c < 0) return "Nhiệt độ";
-  if (c == 0) return "Trời quang";
+  if (c == 0) return "Trời đẹp";
   if (c <= 2) return "Ít mây";
   if (c == 3) return "Nhiều mây";
   if (c == 45 || c == 48) return "Sương mù";
@@ -1914,10 +1917,17 @@ void maintainWeather() {
   if (fetchWeatherOnce()) { wxLastOk = wxLastTry; wxDirty = true; }
 }
 
+// Time-of-day accents (lit colour pair, top -> bottom of each digit):
+// 0 morning amber, 1 daytime cyan, 2 sunset, 3 evening violet, 4 night blue.
+static const uint32_t SB_PAL[5][2] = {
+  {0xFFD36B, 0xFF8A3D}, {0x5FEFFF, 0x1597FF}, {0xFFA25C, 0xFF4F7B}, {0xB49BFF, 0x6C7BFF}, {0x6FB8FF, 0x2D6BFF}
+};
 static const uint8_t SB_MASK[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
-static const int SB_CX = 30, SB_CY = 54;                       // clock origin
-static const int SB_DX[4] = {0, 50, 122, 172};                 // digit x offsets
-static const uint32_t SB_LIT = 0x27DFFF, SB_DIM = 0x0A1B2C;
+static const int SB_CX = 35, SB_CY = 60;                      // clock origin
+static const int SB_DW = 42, SB_DH = 70;                      // digit size
+static const int SB_DX[4] = {0, 50, 114, 164};                // digit x offsets
+static const int SB_BAR_X = 24, SB_BAR_W = 272;               // seconds bar
+static const uint32_t SB_DIM = 0x182B46, SB_CARD = 0x0D192B;
 
 static lv_obj_t *sbRect(lv_obj_t *p, int x, int y, int w, int h, int r, uint32_t col) {
   lv_obj_t *o = lv_obj_create(p);
@@ -1930,17 +1940,105 @@ static lv_obj_t *sbRect(lv_obj_t *p, int x, int y, int w, int h, int r, uint32_t
   return o;
 }
 
+static void sbGrad(lv_obj_t *o, uint32_t c2, bool hor) {
+  lv_obj_set_style_bg_grad_color(o, lc(c2), 0);
+  lv_obj_set_style_bg_grad_dir(o, hor ? LV_GRAD_DIR_HOR : LV_GRAD_DIR_VER, 0);
+}
+
+static void sbBorder(lv_obj_t *o, uint32_t col) {
+  lv_obj_set_style_border_width(o, 1, 0);
+  lv_obj_set_style_border_color(o, lc(col), 0);
+  lv_obj_set_style_border_opa(o, LV_OPA_COVER, 0);
+}
+
+static uint32_t sbMix(uint32_t a, uint32_t b, int t) {  // t: 0..256
+  int r = ((int)((a >> 16) & 255) * (256 - t) + (int)((b >> 16) & 255) * t) >> 8;
+  int g = ((int)((a >> 8) & 255) * (256 - t) + (int)((b >> 8) & 255) * t) >> 8;
+  int bl = ((int)(a & 255) * (256 - t) + (int)(b & 255) * t) >> 8;
+  return ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)bl;
+}
+
+static int sbPeriodOf(int hour) {
+  if (hour >= 5 && hour < 11) return 0;
+  if (hour >= 11 && hour < 17) return 1;
+  if (hour >= 17 && hour < 20) return 2;
+  if (hour >= 20 && hour < 23) return 3;
+  return 4;
+}
+
+// Segments overlap at the corners and have fully rounded caps, so lit digits read as
+// one continuous, round-cornered stroke.
 static void sbSegGeom(int s, int &x, int &y, int &w, int &h) {
-  const int W = 40, H = 76, T = 7;
+  const int W = SB_DW, H = SB_DH, T = 9, M = (H - T) / 2;   // M = y of the middle bar
   switch (s) {
-    case 0: x = T + 1; y = 0; w = W - 2 * T - 2; h = T; break;                 // a
-    case 1: x = W - T; y = T + 1; w = T; h = 25; break;                        // b
-    case 2: x = W - T; y = H - T - 1 - 25; w = T; h = 25; break;               // c
-    case 3: x = T + 1; y = H - T; w = W - 2 * T - 2; h = T; break;             // d
-    case 4: x = 0; y = H - T - 1 - 25; w = T; h = 25; break;                   // e
-    case 5: x = 0; y = T + 1; w = T; h = 25; break;                            // f
-    default: x = T + 1; y = (H - T) / 2; w = W - 2 * T - 2; h = T; break;      // g
+    case 0: x = 0; y = 0; w = W; h = T; break;                      // a  top
+    case 1: x = W - T; y = 0; w = T; h = M + T; break;              // b  upper right
+    case 2: x = W - T; y = M; w = T; h = H - M; break;              // c  lower right
+    case 3: x = 0; y = H - T; w = W; h = T; break;                  // d  bottom
+    case 4: x = 0; y = M; w = T; h = H - M; break;                  // e  lower left
+    case 5: x = 0; y = 0; w = T; h = M + T; break;                  // f  upper left
+    default: x = 0; y = M; w = W; h = T; break;                     // g  middle
   }
+}
+
+static void sbCloud(lv_obj_t *p, int x, int y, int u, uint32_t col) {
+  sbRect(p, x, y + u * 2 / 5, u, u * 2 / 5, u / 5, col);
+  sbRect(p, x + u * 3 / 20, y + u / 5, u * 9 / 20, u * 9 / 20, LV_RADIUS_CIRCLE, col);
+  sbRect(p, x + u * 2 / 5, y, u * 11 / 20, u * 11 / 20, LV_RADIUS_CIRCLE, col);
+}
+
+// 22x22 weather glyph built from simple shapes.
+static void sbDrawWx(lv_obj_t *box, int code, bool night) {
+  lv_obj_clean(box);
+  if (code < 0) return;
+  const uint32_t SUN = 0xFFC94D, LIT = 0xE9F1FF, CL = 0xB9C7DA, CLD = 0x8FA3BF, DROP = 0x5FB4FF;
+  if (code <= 2) {
+    bool partly = code >= 1;
+    int o = partly ? 0 : 3, d = partly ? 11 : 16;
+    if (night) {
+      sbRect(box, o, o, d, d, LV_RADIUS_CIRCLE, LIT);
+      sbRect(box, o + d / 3 + 1, o - 1, d - 1, d - 1, LV_RADIUS_CIRCLE, SB_CARD);
+    } else {
+      sbRect(box, o, o, d, d, LV_RADIUS_CIRCLE, SUN);
+      if (!partly) {
+        sbRect(box, 10, 0, 2, 3, 1, SUN); sbRect(box, 10, 19, 2, 3, 1, SUN);
+        sbRect(box, 0, 10, 3, 2, 1, SUN); sbRect(box, 19, 10, 3, 2, 1, SUN);
+      }
+    }
+    if (partly) sbCloud(box, 6, 9, 16, CL);
+  } else if (code == 3) {
+    sbCloud(box, 1, 3, 20, CL);
+  } else if (code == 45 || code == 48) {
+    sbRect(box, 2, 5, 18, 2, 1, CL); sbRect(box, 0, 10, 22, 2, 1, CL); sbRect(box, 3, 15, 16, 2, 1, CL);
+  } else if (code >= 95) {
+    sbCloud(box, 2, 0, 18, CLD);
+    sbRect(box, 10, 12, 3, 4, 0, SUN); sbRect(box, 7, 15, 4, 5, 0, SUN);
+  } else {
+    sbCloud(box, 2, 0, 18, CLD);
+    sbRect(box, 6, 15, 2, 5, 1, DROP); sbRect(box, 11, 16, 2, 5, 1, DROP); sbRect(box, 16, 15, 2, 5, 1, DROP);
+  }
+}
+
+// 22x22 moon phase for lunar day 1..30 (8 phases).
+static void sbDrawMoon(lv_obj_t *box, int day) {
+  lv_obj_clean(box);
+  const uint32_t LIT = 0xE9F1FF;
+  const int S = 18, ox = 2, oy = 2;
+  int idx = (((day < 1 ? 1 : day) - 1) * 8 + 15) / 30 % 8;
+  if (idx == 0) {
+    lv_obj_t *r = sbRect(box, ox, oy, S, S, LV_RADIUS_CIRCLE, SB_CARD);
+    sbBorder(r, 0x4A5F7C);
+    return;
+  }
+  sbRect(box, ox, oy, S, S, LV_RADIUS_CIRCLE, LIT);
+  if (idx == 4) return;
+  bool waxing = idx < 4;
+  if (idx == 2 || idx == 6) {
+    sbRect(box, waxing ? ox : ox + S / 2, oy, S / 2, S, 0, SB_CARD);
+    return;
+  }
+  int shift = (idx == 1 || idx == 7) ? 7 : 15;   // crescent vs gibbous
+  sbRect(box, waxing ? ox - shift : ox + shift, oy, S, S, LV_RADIUS_CIRCLE, SB_CARD);
 }
 
 static String waitStatusText() {
@@ -1951,10 +2049,9 @@ static String waitStatusText() {
 }
 
 static lv_obj_t *sbCard(lv_obj_t *root, int x, int w) {
-  lv_obj_t *c = sbRect(root, x, 138, w, 72, 12, 0x0A1424);
-  lv_obj_set_style_border_width(c, 1, 0);
-  lv_obj_set_style_border_color(c, lc(0x1B2B42), 0);
-  lv_obj_set_style_border_opa(c, LV_OPA_COVER, 0);
+  lv_obj_t *c = sbRect(root, x, 152, w, 76, 14, 0x0E1B2E);
+  sbGrad(c, 0x08111E, false);
+  sbBorder(c, 0x1B2B42);
   return c;
 }
 
@@ -1963,53 +2060,64 @@ void buildStandbyScreen() {
   sbActive = true;
   sbBuiltSig = (settings.sbLunar ? 1 : 0) | (settings.sbTemp ? 2 : 0);
   sbLastMin = sbLastSec = sbLastDay = -2;
-  sbColonOn = -1;
+  sbColonOn = -1; sbPeriod = -1; sbIconKey = -99;
   sbLastStatus = ""; sbLastIp = "";
   wxDirty = true;
   lv_obj_t *root = lv_scr_act();
 
-  // Top bar
-  sbDot = sbRect(root, 12, 9, 8, 8, LV_RADIUS_CIRCLE, 0x5F7187);
-  lv_obj_t *brand = makeLabel(root, 26, 5, 100, 16, &lv_font_montserrat_12, lc(0x7B8DA3));
-  lv_label_set_text(brand, "WAZE HUD");
-  sbStatus = makeLabel(root, 130, 5, 180, 16, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_RIGHT);
+  // Top bar: link status (left) + IP (right)
+  sbDot = sbRect(root, 10, 8, 8, 8, LV_RADIUS_CIRCLE, 0x5F7187);
+  sbStatus = makeLabel(root, 24, 4, 170, 16, &lv_font_montserrat_12, lc(0x8C9CB0));
+  sbIp = makeLabel(root, 190, 4, 120, 16, &lv_font_montserrat_12, lc(0x28DFFF), LV_TEXT_ALIGN_RIGHT);
   sbRect(root, 10, 24, 300, 1, 0, 0x14202F);
 
-  // Date
-  sbDate = makeLabel(root, 0, 29, 320, 22, &vn_font_18, lc(0xDCE8FA), LV_TEXT_ALIGN_CENTER);
+  // Date row: weekday (accent) . dd/mm/yyyy
+  sbWeekday = makeLabel(root, 0, 27, 152, 22, &vn_font_18, lc(0x27DFFF), LV_TEXT_ALIGN_RIGHT);
+  sbRect(root, 158, 36, 4, 4, LV_RADIUS_CIRCLE, 0x3A4C66);
+  sbDate = makeLabel(root, 168, 27, 150, 22, &vn_font_18, lc(0xF5F8FF));
 
-  // 7-segment clock
+  // Clock panel
+  lv_obj_t *panel = sbRect(root, 10, 52, 300, 94, 16, 0x112540);
+  sbGrad(panel, 0x08111E, false);
+  sbBorder(panel, 0x1E3350);
   for (int d = 0; d < 4; ++d)
     for (int s = 0; s < 7; ++s) {
       int x, y, w, h;
       sbSegGeom(s, x, y, w, h);
-      sbSeg[d][s] = sbRect(root, SB_CX + SB_DX[d] + x, SB_CY + y, w, h, 3, SB_DIM);
+      sbSeg[d][s] = sbRect(root, SB_CX + SB_DX[d] + x, SB_CY + y, w, h, LV_RADIUS_CIRCLE, SB_DIM);   // full pill: rounded caps
+      lv_obj_add_flag(sbSeg[d][s], LV_OBJ_FLAG_HIDDEN);
     }
-  sbColon[0] = sbRect(root, SB_CX + 103, SB_CY + 22, 7, 7, 2, SB_LIT);
-  sbColon[1] = sbRect(root, SB_CX + 103, SB_CY + 47, 7, 7, 2, SB_LIT);
-  sbSec = makeLabel(root, SB_CX + 222, SB_CY + 44, 60, 32, &lv_font_montserrat_24, lc(0x5F7187));
+  sbColon[0] = sbRect(root, SB_CX + 99, SB_CY + 20, 8, 8, LV_RADIUS_CIRCLE, SB_DIM);
+  sbColon[1] = sbRect(root, SB_CX + 99, SB_CY + 42, 8, 8, LV_RADIUS_CIRCLE, SB_DIM);
+  sbSec = makeLabel(root, SB_CX + 218, SB_CY + 38, 46, 32, &lv_font_montserrat_24, lc(0x5F7187));
+  sbRect(root, SB_BAR_X, 137, SB_BAR_W, 4, 2, 0x13243A);
+  sbBarFill = sbRect(root, SB_BAR_X, 137, 2, 4, 2, 0x27DFFF);
 
   // Cards
-  int lx = 10, lw = 300, rx = 10, rw = 300;
-  if (settings.sbLunar && settings.sbTemp) { lw = 190; rx = 206; rw = 104; }
+  int lw = 300, rx = 10, rw = 300;
+  if (settings.sbLunar && settings.sbTemp) { lw = 176; rx = 196; rw = 114; }
   if (settings.sbLunar) {
-    lv_obj_t *c = sbCard(root, lx, lw);
-    sbLunarDay = makeLabel(c, 10, 12, 62, 48, &lv_font_montserrat_40, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
-    lv_obj_t *cap = makeLabel(c, 78, 6, lw - 84, 18, &vn_font_14, lc(0x7B8DA3));
+    lv_obj_t *c = sbCard(root, 10, lw);
+    sbLunarDay = makeLabel(c, 2, 14, 58, 46, &lv_font_montserrat_40, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
+    sbRect(c, 62, 14, 1, 48, 0, 0x1B2B42);
+    lv_obj_t *cap = makeLabel(c, 72, 8, 60, 18, &vn_font_14, lc(0x7B8DA3));
     lv_label_set_text(cap, "Âm lịch");
-    sbLunarMonth = makeLabel(c, 78, 25, lw - 84, 22, &vn_font_18, lc(0xF5F8FF));
-    sbLunarYear = makeLabel(c, 78, 49, lw - 84, 18, &vn_font_14, lc(0x5FE9FF));
+    sbMoon = lv_obj_create(c);
+    lv_obj_remove_style_all(sbMoon);
+    lv_obj_set_pos(sbMoon, lw - 32, 6);
+    lv_obj_set_size(sbMoon, 22, 22);
+    sbLunarMonth = makeLabel(c, 72, 27, lw - 76, 22, &vn_font_18, lc(0xF5F8FF));
+    sbLunarYear = makeLabel(c, 72, 52, lw - 76, 18, &vn_font_14, lc(0x5FE9FF));
   }
   if (settings.sbTemp) {
     lv_obj_t *c = sbCard(root, settings.sbLunar ? rx : 10, rw);
-    sbTempCap = makeLabel(c, 0, 6, rw, 18, &vn_font_14, lc(0x7B8DA3), LV_TEXT_ALIGN_CENTER);
-    sbTemp = makeLabel(c, 0, 22, rw, 46, &lv_font_montserrat_40, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+    sbWxIcon = lv_obj_create(c);
+    lv_obj_remove_style_all(sbWxIcon);
+    lv_obj_set_pos(sbWxIcon, 8, 6);
+    lv_obj_set_size(sbWxIcon, 22, 22);
+    sbTempCap = makeLabel(c, 36, 8, rw - 40, 18, &vn_font_14, lc(0x9FB2C8));
+    sbTemp = makeLabel(c, 0, 28, rw, 46, &lv_font_montserrat_40, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
   }
-
-  // Footer
-  sbHint = makeLabel(root, 10, 218, 150, 16, &lv_font_montserrat_12, lc(0x5F7187));
-  lv_label_set_text(sbHint, "BLE: WazeHUD");
-  sbIp = makeLabel(root, 150, 218, 160, 16, &lv_font_montserrat_12, lc(0x28DFFF), LV_TEXT_ALIGN_RIGHT);
 }
 
 void updateStandbyScreen(bool force) {
@@ -2023,6 +2131,22 @@ void updateStandbyScreen(bool force) {
   struct tm ti;
   localtime_r(&now, &ti);
   const bool ok = ti.tm_year > (2016 - 1900);
+  const bool night = ok && (ti.tm_hour < 6 || ti.tm_hour >= 18);
+
+  // Accent palette follows the time of day.
+  int period = ok ? sbPeriodOf(ti.tm_hour) : 1;
+  const uint32_t c1 = SB_PAL[period][0], c2 = SB_PAL[period][1];
+  if (period != sbPeriod) {
+    sbPeriod = period;
+    sbLastMin = sbLastDay = sbColonOn = -2;
+    lv_obj_set_style_text_color(sbWeekday, lc(c1), 0);
+    lv_obj_set_style_bg_color(sbBarFill, lc(c1), 0);
+    sbGrad(sbBarFill, c2, true);
+    if (sbLunarDay) {
+      lv_obj_set_style_text_color(sbLunarDay, lc(c1), 0);
+      lv_obj_set_style_text_color(sbLunarYear, lc(sbMix(c1, c2, 60)), 0);
+    }
+  }
 
   // Digits (only when the minute changes)
   int minKey = ok ? ti.tm_hour * 60 + ti.tm_min : -1;
@@ -2032,23 +2156,36 @@ void updateStandbyScreen(bool force) {
     if (ok) { dg[0] = ti.tm_hour / 10; dg[1] = ti.tm_hour % 10; dg[2] = ti.tm_min / 10; dg[3] = ti.tm_min % 10; }
     for (int d = 0; d < 4; ++d) {
       uint8_t mask = ok ? SB_MASK[dg[d]] : 0x40;
-      for (int s = 0; s < 7; ++s)
-        lv_obj_set_style_bg_color(sbSeg[d][s], lc((mask >> s) & 1 ? SB_LIT : SB_DIM), 0);
+      for (int s = 0; s < 7; ++s) {
+        lv_obj_t *seg = sbSeg[d][s];
+        if ((mask >> s) & 1) {
+          // Vertical gradient measured across the whole digit, so joined segments stay seamless.
+          int x, y, w, h;
+          sbSegGeom(s, x, y, w, h);
+          lv_obj_set_style_bg_color(seg, lc(sbMix(c1, c2, y * 256 / SB_DH)), 0);
+          sbGrad(seg, sbMix(c1, c2, (y + h) * 256 / SB_DH), false);
+          lv_obj_clear_flag(seg, LV_OBJ_FLAG_HIDDEN);
+        } else {
+          lv_obj_add_flag(seg, LV_OBJ_FLAG_HIDDEN);
+        }
+      }
     }
   }
 
-  // Blinking colon + seconds
+  // Blinking colon, seconds number + progress bar
   int secKey = ok ? ti.tm_sec : -1;
-  if (secKey != sbLastSec) {
+  if (secKey != sbLastSec || sbColonOn == -2) {
     sbLastSec = secKey;
     int on = (!ok || (ti.tm_sec % 2) == 0) ? 1 : 0;
     if (on != sbColonOn) {
       sbColonOn = on;
-      for (int i = 0; i < 2; ++i) lv_obj_set_style_bg_color(sbColon[i], lc(on ? SB_LIT : SB_DIM), 0);
+      for (int i = 0; i < 2; ++i) lv_obj_set_style_bg_color(sbColon[i], lc(on ? sbMix(c1, c2, 90) : SB_DIM), 0);
     }
     char sb[4];
     if (ok) snprintf(sb, sizeof(sb), "%02d", ti.tm_sec); else snprintf(sb, sizeof(sb), "--");
     lv_label_set_text(sbSec, sb);
+    int bw = ok ? ((ti.tm_sec + 1) * SB_BAR_W) / 60 : 2;
+    lv_obj_set_width(sbBarFill, bw < 2 ? 2 : bw);
   }
 
   // Date + lunar (only when the day changes)
@@ -2057,9 +2194,14 @@ void updateStandbyScreen(bool force) {
     sbLastDay = dayKey;
     static const char *WD[7] = {"Chủ Nhật", "Thứ Hai", "Thứ Ba", "Thứ Tư", "Thứ Năm", "Thứ Sáu", "Thứ Bảy"};
     char buf[48];
-    if (ok) snprintf(buf, sizeof(buf), "%s, %d/%d/%04d", WD[ti.tm_wday], ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900);
-    else snprintf(buf, sizeof(buf), "Đang đồng bộ giờ...");
-    lv_label_set_text(sbDate, buf);
+    if (ok) {
+      lv_label_set_text(sbWeekday, WD[ti.tm_wday]);
+      snprintf(buf, sizeof(buf), "%d/%d/%04d", ti.tm_mday, ti.tm_mon + 1, ti.tm_year + 1900);
+      lv_label_set_text(sbDate, buf);
+    } else {
+      lv_label_set_text(sbWeekday, "");
+      lv_label_set_text(sbDate, "Đồng bộ giờ...");
+    }
     if (sbLunarDay) {
       if (ok) {
         int ld, lm, ly; bool leap;
@@ -2071,29 +2213,37 @@ void updateStandbyScreen(bool force) {
         lv_obj_set_style_text_font(sbLunarMonth, leap ? &vn_font_14 : &vn_font_18, 0);
         lv_label_set_text(sbLunarMonth, b2);
         snprintf(b2, sizeof(b2), "năm %s", nm); lv_label_set_text(sbLunarYear, b2);
+        sbDrawMoon(sbMoon, ld);
       } else {
         lv_label_set_text(sbLunarDay, "--");
         lv_label_set_text(sbLunarMonth, "");
         lv_label_set_text(sbLunarYear, "");
+        lv_obj_clean(sbMoon);
       }
     }
   }
 
-  // Temperature
-  if (sbTemp && wxDirty) {
-    wxDirty = false;
-    if (isnan(wxTempC)) {
-      lv_label_set_text(sbTemp, "--" "\xC2\xB0");
-      lv_label_set_text(sbTempCap, WiFi.status() == WL_CONNECTED ? "Đang tải" : "Không có mạng");
-      lv_obj_set_style_text_color(sbTemp, lc(0x5F7187), 0);
-    } else {
-      int t = (int)lroundf(wxTempC);
-      char tb[12];
-      snprintf(tb, sizeof(tb), "%d\xC2\xB0", t);
-      lv_label_set_text(sbTemp, tb);
-      lv_label_set_text(sbTempCap, wxCondText(wxCode));
-      uint32_t col = t <= 18 ? 0x5FB4FF : (t >= 37 ? 0xFF6B5E : (t >= 33 ? 0xFFC94D : 0xF5F8FF));
-      lv_obj_set_style_text_color(sbTemp, lc(col), 0);
+  // Temperature card (text + glyph); glyph also flips between day and night
+  if (sbTemp) {
+    const bool have = !isnan(wxTempC);
+    int key = (have ? wxCode : -1) * 2 + (night ? 1 : 0);
+    if (wxDirty || key != sbIconKey) {
+      wxDirty = false;
+      sbIconKey = key;
+      sbDrawWx(sbWxIcon, have ? wxCode : -1, night);
+      if (!have) {
+        lv_label_set_text(sbTemp, "--" "\xC2\xB0");
+        lv_label_set_text(sbTempCap, WiFi.status() == WL_CONNECTED ? "Đang tải" : "Không có mạng");
+        lv_obj_set_style_text_color(sbTemp, lc(0x5F7187), 0);
+      } else {
+        int t = (int)lroundf(wxTempC);
+        char tb[12];
+        snprintf(tb, sizeof(tb), "%d\xC2\xB0", t);
+        lv_label_set_text(sbTemp, tb);
+        lv_label_set_text(sbTempCap, wxCondText(wxCode));
+        uint32_t col = t <= 18 ? 0x5FB4FF : (t >= 37 ? 0xFF6B5E : (t >= 33 ? 0xFFC94D : 0xF5F8FF));
+        lv_obj_set_style_text_color(sbTemp, lc(col), 0);
+      }
     }
   }
 
