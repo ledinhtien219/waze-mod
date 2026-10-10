@@ -21,6 +21,25 @@ HUD 320x240 dành cho **ESP32 DevKit V1 + ILI9341**. TFT không cần cảm ứn
 - GitHub Actions build firmware.
 - GitHub Release tự đính kèm `firmware.bin` khi push tag `v*`.
 
+## Ảnh minh họa
+
+Ảnh dưới đây là **mô phỏng** (dựng từ cùng bố cục với firmware), không phải ảnh chụp thiết bị thật; font trên màn hình thật có thể lệch vài pixel.
+
+| Màn hình chờ buổi tối | Buổi sáng | Ban ngày, mưa | Ban đêm |
+|---|---|---|---|
+| ![](docs/images/standby-evening.png) | ![](docs/images/standby-morning.png) | ![](docs/images/standby-rain.png) | ![](docs/images/standby-night.png) |
+
+| Web Setting | Hệ thống | Studio |
+|---|---|---|
+| <img src="docs/images/web-settings-top.png" width="220"> | <img src="docs/images/web-settings-system.png" width="220"> | <img src="docs/images/studio-settings.png" width="320"> |
+
+## Tài liệu
+
+- [Sơ đồ nối dây và linh kiện tùy chọn](docs/WIRING.md)
+- [Kiểm thử](docs/TESTING.md)
+- [Mẫu vỏ in 3D](docs/CASE.md)
+- [Giao thức BLE/HTTP](PROTOCOL.md)
+
 ## Phần cứng
 
 | ILI9341 | ESP32 DevKit V1 |
@@ -78,8 +97,8 @@ ESP32 advertise BLE với tên `WAZE-HUD`.
 
 Khi chưa nhận dữ liệu từ điện thoại (hoặc mất kết nối quá 30 giây), TFT hiển thị màn hình chờ: đồng hồ số 7 đoạn, ngày dương lịch, **âm lịch** (kèm năm Can Chi, tháng nhuận) và **nhiệt độ** ngoài trời.
 
-- Giờ lấy từ NTP qua Wi-Fi (ESP32 không có pin RTC nên cần Wi-Fi/hotspot điện thoại để có giờ).
-- Nhiệt độ lấy từ Open-Meteo (không cần API key), cập nhật 15 phút/lần, chỉ gọi khi đang ở màn hình chờ và chưa kết nối BLE.
+- Giờ lấy từ NTP qua Wi-Fi. ESP32 không có pin RTC, nên khi không có Wi-Fi, app Android bridge gửi giờ điện thoại qua BLE (xem `PROTOCOL.md`).
+- Nhiệt độ lấy từ Open-Meteo (không cần API key), cập nhật 15 phút/lần, chỉ gọi khi đang ở màn hình chờ. Cần Wi-Fi có internet.
 - Web Setting → **Màn hình chờ**: bật/tắt đồng hồ, âm lịch, nhiệt độ và chọn khu vực thời tiết.
 - Âm lịch tính bằng thuật toán Hồ Ngọc Đức (múi giờ UTC+7), không cần tải dữ liệu.
 
@@ -447,4 +466,31 @@ Trong WazeMod hãy vào HUD Link → Chọn thiết bị và chọn `WazeHUD` d�
 - Hiển thị `trn2` (lần rẽ sau lần rẽ kế tiếp) ở góc dưới trái: `Sau: ↱`. Ẩn ở theme Minimal/Classic.
 - Hiển thị số lối ra trong biểu tượng vòng xuyến từ trường HLP `exit` (giả định `exit` là số lối ra vòng xuyến, 1–9).
 - Tách cài đặt **Biển báo** khỏi **Cảnh báo khác**: giới hạn tốc độ sắp tới, cấm rẽ/quay đầu, biển làn, trạm thu phí, đèn giao thông, khu dân cư... Có trong Web Setting và Studio. Mặc định bật.
+
+## Firmware v1.8.0 — màn hình chờ, giao diện mới và độ bền
+
+**Màn hình chờ** (khi chưa nhận dữ liệu từ điện thoại, hoặc sau 30 giây mất kết nối)
+- Đồng hồ số 7 đoạn bo tròn, nét liền, màu gradient đổi theo buổi trong ngày; thanh tiến trình giây.
+- Ngày dương lịch, **âm lịch** (năm Can Chi, tháng nhuận, icon pha trăng) và **nhiệt độ** kèm icon thời tiết ngày/đêm (Open-Meteo, 15 phút/lần).
+- Giờ từ NTP qua Wi-Fi, hoặc từ điện thoại qua BLE (app Android bridge gửi giờ) khi không có Wi-Fi.
+- Âm lịch tính cục bộ bằng thuật toán Hồ Ngọc Đức (UTC+7), có kiểm thử 25.933 ngày (1990–2060).
+
+**Web Setting mới** (`http://wazehud.local` hoặc IP)
+- Giao diện tối kiểu ứng dụng, xem trước HUD trực tiếp, thanh lưu cố định, trạng thái BLE/Wi-Fi/HUD tự cập nhật.
+- Mục Màn hình chờ (bật/tắt, âm lịch, nhiệt độ, 12 khu vực thời tiết), tự giảm sáng ban đêm, còi báo động.
+- Mục Hệ thống: **PIN** (HTTP Basic, user `admin`), sao lưu/khôi phục cài đặt (JSON), đặt lại mặc định, khởi động lại.
+- Studio (Web Bluetooth) có các tùy chọn tương ứng.
+
+**Độ bền và tiện dụng**
+- mDNS `wazehud.local`.
+- Software watchdog: tự khởi động lại nếu vòng lặp chính treo quá 45 giây (không áp dụng khi đang cập nhật firmware).
+- Nút BOOT: bấm ngắn bật/tắt đồng hồ, giữ 1–5 giây đổi độ sáng, giữ 10 giây reset toàn bộ.
+- Còi báo động tùy chọn trên GPIO32: bíp đôi khi có camera/cảnh sát mới, bíp ba khi bắt đầu vượt tốc độ.
+- Tự giảm sáng theo khung giờ (mặc định 21:00–05:00, 40%); không giảm khi chưa có giờ hợp lệ.
+- Sửa lỗi âm lịch với ngày trước năm 2000 và một số ngày biên hiếm gặp.
+- Khóa lưu mới: `adim`, `dim_lv`, `dim_f`, `dim_t`, `buzz`, `webpin`, `sb_on`, `sb_lunar`, `sb_temp`, `wx_city`.
+
+**Công cụ**
+- CI chạy kiểm thử tự động (`tests/run_tests.sh`) và kiểm tra tính nhất quán các bản sao file nguồn.
+- Tài liệu: [nối dây](docs/WIRING.md), [kiểm thử](docs/TESTING.md), [mẫu vỏ in 3D](docs/CASE.md).
 

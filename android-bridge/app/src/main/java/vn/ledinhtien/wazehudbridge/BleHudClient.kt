@@ -37,6 +37,16 @@ object BleHudClient {
     private var activeScan: ScanCallback? = null
     private var statusListener: ((String) -> Unit)? = null
 
+    // The ESP32 has no RTC battery: push the phone clock after connecting and every 10 minutes,
+    // so the standby clock / auto-dim work without Wi-Fi. {"v":1,"t":"time","ts":<unix seconds>}
+    private val timeSyncRunnable = object : Runnable {
+        override fun run() {
+            if (!isConnected) return
+            sendJson("{\"v\":1,\"t\":\"time\",\"ts\":${System.currentTimeMillis() / 1000L}}")
+            mainHandler.postDelayed(this, 600_000L)
+        }
+    }
+
     private val writeQueue = ArrayDeque<ByteArray>()
     private var writeInProgress = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -142,6 +152,7 @@ object BleHudClient {
 
     @SuppressLint("MissingPermission")
     fun disconnect() {
+        mainHandler.removeCallbacks(timeSyncRunnable)
         connecting = false
         isConnected = false
         synchronized(writeQueue) {
@@ -200,6 +211,7 @@ object BleHudClient {
                 setStatus("Đã kết nối, đang tìm dịch vụ…")
                 g.discoverServices()
             } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                mainHandler.removeCallbacks(timeSyncRunnable)
                 connecting = false
                 isConnected = false
                 rxCharacteristic = null
@@ -236,6 +248,8 @@ object BleHudClient {
 
         override fun onMtuChanged(g: BluetoothGatt, newMtu: Int, status: Int) {
             if (status == BluetoothGatt.GATT_SUCCESS) mtu = newMtu
+            mainHandler.removeCallbacks(timeSyncRunnable)
+            mainHandler.postDelayed(timeSyncRunnable, 500L)
         }
 
         override fun onCharacteristicWrite(

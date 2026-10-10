@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    name: Host tests + consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Firmware copies must stay identical
+        run: |
+          cmp ESP32_WAZE_HUD.ino src/main.cpp
+          for f in vn_font_14.c vn_font_18.c vn_arrows_22.c; do cmp "$f" "src/$f"; done
+      - name: Lunar calendar + firmware logic tests
+        run: bash tests/run_tests.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Studio JavaScript syntax
+        run: |
+          python3 - <<'PY'
+          import re
+          html = open("studio/index.html", encoding="utf-8").read()
+          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          assert scripts, "no inline script found"
+          open("studio_check.js", "w", encoding="utf-8").write("\n".join(scripts))
+          PY
+          node --check studio_check.js

@@ -8,6 +8,7 @@
 - AccessibilityService: đọc text/contentDescription trên màn hình Waze/Waze mod khi người dùng chủ động cấp quyền.
 - Parser heuristic: nhận diện turn, distance, ETA và nhiều nhóm cảnh báo.
 - HTTP POST JSON sang ESP32 `/hud`.
+- BLE: tự gửi giờ điện thoại sang ESP32 ngay sau khi kết nối và lặp lại mỗi 10 phút (`{"v":1,"t":"time","ts":...}`), để đồng hồ chờ và giảm sáng ban đêm hoạt động khi không có Wi-Fi.
 
 ## Build
 

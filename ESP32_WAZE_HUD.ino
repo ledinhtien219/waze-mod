@@ -18,6 +18,8 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <ESPmDNS.h>
+#include <sys/time.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
 #include <freertos/FreeRTOS.h>
@@ -55,7 +57,13 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.7.7";
+static const uint32_t WATCHDOG_MS = 45000;   // software watchdog: restart if loop() stalls this long
+static const int BTN_PIN = 0;                // BOOT button (active low)
+#ifndef BUZZER_PIN
+#define BUZZER_PIN 32                        // optional passive piezo buzzer
+#endif
+static const int BUZ_CH = 7;                 // LEDC channel (Arduino-ESP32 core 2.x)
+static const char *FW_VERSION = "1.8.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -70,6 +78,16 @@ static lv_disp_drv_t lvDispDrv;
 
 enum LvUiMode : uint8_t { LVUI_NONE, LVUI_BOOT, LVUI_WAITING, LVUI_HUD, LVUI_OTA };
 static LvUiMode lvUiMode = LVUI_NONE;
+
+// Runtime state shared by several features.
+static uint8_t effBright = 100;      // brightness actually applied (auto-dim / button preset)
+static int btnBrightPct = 0;         // 0 = none, else temporary cap from the hardware button
+static bool forceClock = false;      // clock screen forced on by the hardware button
+static String webPin;                // Web Setting PIN ("" = disabled)
+static float wxTempC = NAN;          // outdoor temperature (Open-Meteo or phone)
+static int wxCode = -1;              // WMO weather code
+static bool wxDirty = true;
+static uint32_t wxPhoneAt = 0;       // millis() when the phone last supplied the weather
 
 // Standby clock screen widgets/caches (see buildStandbyScreen()).
 static bool sbActive = false;
@@ -185,6 +203,11 @@ struct AppSettings {
   bool alertHazard = true;
   bool alertSigns = true;
   bool autoUpdateCheck = true;
+  bool autoDim = true;        // dim the display at night (needs a valid clock)
+  uint8_t dimLevel = 40;      // % brightness while dimmed
+  uint8_t dimFrom = 21;       // dim from hour (inclusive)
+  uint8_t dimTo = 5;          // until hour (exclusive)
+  bool buzzer = false;        // beep on alerts (needs a buzzer on BUZZER_PIN)
   bool standbyClock = true;   // clock screen while no HUD data
   bool sbLunar = true;
   bool sbTemp = true;
@@ -227,6 +250,12 @@ void loadAppSettings() {
   settings.alertHazard = prefs.getBool("a_hazard", true);
   settings.alertSigns = prefs.getBool("a_signs", true);
   settings.autoUpdateCheck = prefs.getBool("autoupdate", true);
+  settings.autoDim = prefs.getBool("adim", true);
+  settings.dimLevel = constrain((int)prefs.getUChar("dim_lv", 40), 20, 80);
+  settings.dimFrom = constrain((int)prefs.getUChar("dim_f", 21), 0, 23);
+  settings.dimTo = constrain((int)prefs.getUChar("dim_t", 5), 0, 23);
+  settings.buzzer = prefs.getBool("buzz", false);
+  webPin = prefs.getString("webpin", "");
   settings.standbyClock = prefs.getBool("sb_on", true);
   settings.sbLunar = prefs.getBool("sb_lunar", true);
   settings.sbTemp = prefs.getBool("sb_temp", true);
@@ -264,6 +293,11 @@ void saveAppSettings() {
   prefs.putBool("a_hazard", settings.alertHazard);
   prefs.putBool("a_signs", settings.alertSigns);
   prefs.putBool("autoupdate", settings.autoUpdateCheck);
+  prefs.putBool("adim", settings.autoDim);
+  prefs.putUChar("dim_lv", settings.dimLevel);
+  prefs.putUChar("dim_f", settings.dimFrom);
+  prefs.putUChar("dim_t", settings.dimTo);
+  prefs.putBool("buzz", settings.buzzer);
   prefs.putBool("sb_on", settings.standbyClock);
   prefs.putBool("sb_lunar", settings.sbLunar);
   prefs.putBool("sb_temp", settings.sbTemp);
@@ -741,11 +775,33 @@ const char* hlpAlertLabel(uint8_t code) {
   }
 }
 
+// Time (and optional weather) pushed by the phone over BLE:
+//   {"v":1,"t":"time","ts":<unix seconds UTC>,"temp":<C>,"wx":<WMO code>}
+// Used only when Wi-Fi/NTP cannot provide the time (ESP32 has no RTC battery).
+static void handlePhoneTime(JsonDocument &d) {
+  uint32_t ts = d["ts"] | (uint32_t)0;
+  if (ts > 1483228800UL && (WiFi.status() != WL_CONNECTED || time(nullptr) < 1483228800L)) {
+    struct timeval tv;
+    tv.tv_sec = (time_t)ts;
+    tv.tv_usec = 0;
+    settimeofday(&tv, nullptr);
+    sbLastMin = sbLastDay = sbLastSec = -2;   // refresh the clock screen
+  }
+  if (!d["temp"].isNull()) {
+    wxTempC = d["temp"].as<float>();
+    wxCode = d["wx"] | -1;
+    wxPhoneAt = millis() | 1;
+    wxDirty = true;
+  }
+}
+
 bool applyHudPayload(const String &payload) {
   JsonDocument doc;
   if (deserializeJson(doc, payload)) return false;
 
   String type = String((const char*)(doc["t"] | ""));
+
+  if (type == "time") { handlePhoneTime(doc); return true; }
 
   // HLP/1 keepalive.
   if (type == "ping") {
@@ -1028,7 +1084,7 @@ void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
   uint32_t w = (uint32_t)(area->x2 - area->x1 + 1);
   uint32_t h = (uint32_t)(area->y2 - area->y1 + 1);
   bool mirror = settings.mirrorHud && lvUiMode == LVUI_HUD;
-  uint8_t brightness = constrain((int)settings.brightness, 20, 100);
+  uint8_t brightness = constrain((int)effBright, 20, 100);
   lv_color_t *out = colorP;
 
   // ILI9341 module has no dedicated backlight PWM in this wiring. Apply
@@ -1577,6 +1633,7 @@ void ensureHudScreen() {
 }
 
 void drawHud() {
+  if (forceClock && settings.standbyClock) return;   // clock screen forced by the button
   ensureHudScreen();
 
   // Data freshness: never present a frozen speed/arrow as live data.
@@ -1588,7 +1645,7 @@ void drawHud() {
   // Mirror / brightness are applied while flushing pixels, so a change needs a
   // full-screen repaint now that unchanged widgets are no longer redrawn.
   static uint16_t lastFlushSig = 0xFFFF;
-  uint16_t flushSig = (uint16_t)((settings.mirrorHud ? 1 : 0) | (settings.brightness << 1));
+  uint16_t flushSig = (uint16_t)((settings.mirrorHud ? 1 : 0) | (effBright << 1));
   if (flushSig != lastFlushSig) {
     lastFlushSig = flushSig;
     lv_obj_invalidate(lv_scr_act());
@@ -1798,8 +1855,9 @@ static int lunSunLongitude(double jdn) {
   double DL = (1.914600 - 0.004817 * T - 0.000014 * T2) * sin(dr * M);
   DL += (0.019993 - 0.000101 * T) * sin(dr * 2 * M) + 0.000290 * sin(dr * 3 * M);
   double L = (L0 + DL) * dr;
-  L -= LUNAR_PI * 2 * (int)(L / (LUNAR_PI * 2));
-  return (int)(L / LUNAR_PI * 6);
+  L -= LUNAR_PI * 2 * floor(L / (LUNAR_PI * 2));   // floor (not truncation): L is negative before 2000
+  int sector = (int)(L / LUNAR_PI * 6);
+  return sector >= 12 ? sector - 12 : sector;
 }
 static long lunNewMoonDay(int k, int tz) { return (long)(lunNewMoon(k) + 0.5 + tz / 24.0); }
 static long lunMonth11(int yy, int tz) {
@@ -1823,8 +1881,9 @@ static void solarToLunar(int dd, int mm, int yy, int &ld, int &lm, int &ly, bool
   const int tz = 7;
   long dayNumber = lunJdFromDate(dd, mm, yy);
   int k = (int)((dayNumber - 2415021.076998695) / 29.530588853);
-  long monthStart = lunNewMoonDay(k + 1, tz);
-  if (monthStart > dayNumber) monthStart = lunNewMoonDay(k, tz);
+  while (lunNewMoonDay(k + 1, tz) <= dayNumber) k++;   // the mean-lunation estimate can be off by one
+  while (lunNewMoonDay(k, tz) > dayNumber) k--;
+  long monthStart = lunNewMoonDay(k, tz);
   long a11 = lunMonth11(yy, tz), b11 = a11;
   if (a11 >= monthStart) { ly = yy; a11 = lunMonth11(yy - 1, tz); }
   else { ly = yy + 1; b11 = lunMonth11(yy + 1, tz); }
@@ -1857,10 +1916,8 @@ static const WxCity WX_CITIES[WX_CITY_COUNT] = {
   {"Ninh Bình", 20.25f, 105.97f}, {"Thanh Hóa", 19.81f, 105.78f}, {"Quy Nhơn", 13.78f, 109.22f}
 };
 
-static float wxTempC = NAN;
-static int wxCode = -1;
 static uint32_t wxLastTry = 0, wxLastOk = 0;
-static bool wxTried = false, wxDirty = true;
+static bool wxTried = false;
 
 static const char *wxCondText(int c) {
   if (c < 0) return "Nhiệt độ";
@@ -1903,12 +1960,13 @@ static bool fetchWeatherOnce() {
   return ok;
 }
 
-// Runs from loop() only while the standby screen is visible and the phone is not
-// connected over BLE, so the (short, blocking) HTTPS request never stalls navigation.
+// Runs from loop() only while the standby screen is visible (no navigation running),
+// so the short blocking HTTPS request never stalls turn-by-turn data.
 void maintainWeather() {
   if (!settings.standbyClock || !settings.sbTemp) return;
   if (!sbActive || lvUiMode != LVUI_WAITING) return;
-  if (WiFi.status() != WL_CONNECTED || bleConnected || otaInProgress) return;
+  if (WiFi.status() != WL_CONNECTED || otaInProgress) return;
+  if (wxPhoneAt && millis() - wxPhoneAt < 1800000UL) return;   // phone supplied it recently
   uint32_t now = millis();
   uint32_t gap = (wxLastOk && wxLastOk == wxLastTry) ? 900000UL : 60000UL;
   if (wxTried && now - wxLastTry < gap) return;
@@ -2266,6 +2324,30 @@ void drawStandby() {
   wifiUiDirty = false;
 }
 
+void updateEffectiveBrightness(bool force) {
+  static uint32_t last = 0;
+  uint32_t ms = millis();
+  if (!force && ms - last < 1000) return;
+  last = ms;
+  int b = settings.brightness;
+  if (btnBrightPct > 0) b = min(b, btnBrightPct);
+  if (settings.autoDim) {
+    time_t now = time(nullptr);
+    struct tm ti;
+    localtime_r(&now, &ti);
+    if (ti.tm_year > (2016 - 1900)) {
+      int h = ti.tm_hour, f = settings.dimFrom, t = settings.dimTo;
+      bool inside = (f == t) ? false : (f < t ? (h >= f && h < t) : (h >= f || h < t));
+      if (inside) b = min(b, (int)settings.dimLevel);
+    }
+  }
+  b = constrain(b, 20, 100);
+  if (b != effBright) {
+    effBright = (uint8_t)b;
+    if (lvUiMode != LVUI_NONE) lv_obj_invalidate(lv_scr_act());
+  }
+}
+
 void drawWaiting() {
   if (settings.standbyClock) { drawStandby(); return; }
   if (lvUiMode != LVUI_WAITING || sbActive) {
@@ -2357,6 +2439,9 @@ String studioSettingsJson() {
   d["sg"] = settings.alertSigns;
   d["au"] = settings.autoUpdateCheck;
   d["style"] = settings.hudStyle;
+  d["sb"] = settings.standbyClock; d["sl"] = settings.sbLunar; d["st"] = settings.sbTemp; d["wc"] = settings.wxCity;
+  d["ad"] = settings.autoDim; d["al"] = settings.dimLevel; d["af"] = settings.dimFrom; d["at"] = settings.dimTo;
+  d["bz"] = settings.buzzer;
   String out;
   serializeJson(d, out);
   return out;
@@ -2490,6 +2575,10 @@ void resetStudioSettingsToDefaults() {
   settings.autoUpdateCheck = true;
   settings.brightness = 100;
   settings.hudStyle = 3;
+  settings.standbyClock = true; settings.sbLunar = true; settings.sbTemp = true; settings.wxCity = 0;
+  settings.autoDim = true; settings.dimLevel = 40; settings.dimFrom = 21; settings.dimTo = 5;
+  settings.buzzer = false;
+  btnBrightPct = 0;
   saveAppSettings();
 }
 
@@ -2518,6 +2607,19 @@ void applyStudioSettings(const String &payload) {
   if (!d["haz"].isNull()) settings.alertHazard = (bool)d["haz"];
   if (!d["sg"].isNull()) settings.alertSigns = (bool)d["sg"];
   if (!d["au"].isNull()) settings.autoUpdateCheck = (bool)d["au"];
+  if (!d["sb"].isNull()) settings.standbyClock = (bool)d["sb"];
+  if (!d["sl"].isNull()) settings.sbLunar = (bool)d["sl"];
+  if (!d["st"].isNull()) settings.sbTemp = (bool)d["st"];
+  if (!d["wc"].isNull()) {
+    uint8_t c = (uint8_t)constrain((int)d["wc"], 0, WX_CITY_COUNT - 1);
+    if (c != settings.wxCity) { settings.wxCity = c; wxTempC = NAN; wxCode = -1; wxTried = false; wxDirty = true; }
+  }
+  if (!d["ad"].isNull()) settings.autoDim = (bool)d["ad"];
+  if (!d["al"].isNull()) settings.dimLevel = constrain((int)d["al"], 20, 80);
+  if (!d["af"].isNull()) settings.dimFrom = constrain((int)d["af"], 0, 23);
+  if (!d["at"].isNull()) settings.dimTo = constrain((int)d["at"], 0, 23);
+  if (!d["bz"].isNull()) settings.buzzer = (bool)d["bz"];
+  updateEffectiveBrightness(true);
 
   saveAppSettings();
   studioMessage = "settings_saved";
@@ -3227,7 +3329,7 @@ section{margin-top:18px;scroll-margin-top:60px}section>h2{font-size:12px;letter-
 .rg{display:flex;align-items:center;gap:10px}.rg output{min-width:40px;text-align:right;font-weight:800;color:var(--cy)}
 input[type=range]{-webkit-appearance:none;appearance:none;width:140px;height:6px;border-radius:9px;background:#26364b;outline:0}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px #1597ff77}input[type=range]::-moz-range-thumb{width:24px;height:24px;border:0;border-radius:50%;background:#fff}
 input[type=text],input[type=password]{width:100%;padding:14px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:15px;margin:6px 0;outline:0}input[type=text]:focus,input[type=password]:focus{border-color:var(--bl);box-shadow:0 0 0 3px #1597ff33}
-select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}
+select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=number]{width:60px;padding:10px 6px;border-radius:10px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:15px;text-align:center;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}
 button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px;background:var(--g);color:#031321;width:100%;margin-top:8px;cursor:pointer;transition:.15s}button:active{transform:scale(.97)}button.sec{background:#17263a;color:var(--tx);border:1px solid #27405c}button:disabled{opacity:.5}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.st{padding:12px;border-radius:13px;background:#08121d;border:1px solid #17283b;color:var(--mu);margin:10px 0;font-size:13px}.ok{color:var(--gr)}.warn{color:var(--am)}
 .pb{height:10px;background:#08121d;border:1px solid #1f3248;border-radius:99px;overflow:hidden}.pb div{height:100%;width:0;background:var(--g);transition:width .3s}.pct{text-align:right;color:var(--mu);font-size:12px;margin-top:4px}
@@ -3243,7 +3345,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
 <div><h3>Xem trước HUD</h3><p>Bật/tắt bên dưới để xem màn hình thay đổi ngay lập tức, rồi bấm Lưu.</p><div class="kv"><span>Uptime <b id="up">%UPTIME%</b>s</span><span>RAM <b id="heap">--</b></span></div></div></div>
 
-<nav id="nav"><a href="#s1" class="act">Hiển thị</a><a href="#s2">Cảnh báo</a><a href="#s3">Màn hình chờ</a><a href="#s4">Kết nối</a><a href="#s5">Cập nhật</a><a href="#s6">Thiết bị</a></nav>
+<nav id="nav"><a href="#s1" class="act">Hiển thị</a><a href="#s2">Cảnh báo</a><a href="#s3">Màn hình chờ</a><a href="#s4">Kết nối</a><a href="#s5">Cập nhật</a><a href="#s6">Hệ thống</a><a href="#s7">Thiết bị</a></nav>
 
 <form method="post" action="/settings" id="f">
 <section id="s1"><h2>Hiển thị HUD</h2><div class="card">
@@ -3253,6 +3355,9 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <div class="row"><div class="l"><div class="ic">🧭</div><div><b>Tên tuyến</b></div></div><label class="sw"><input type="checkbox" name="route" id="route" %ROUTE%><s></s></label></div>
 <div class="row"><div class="l"><div class="ic">⏱️</div><div><b>ETA</b></div></div><label class="sw"><input type="checkbox" name="eta" id="eta" %ETA%><s></s></label></div>
 <div class="row"><div class="l"><div class="ic">🚦</div><div><b>Biển giới hạn tốc độ</b></div></div><label class="sw"><input type="checkbox" name="limit" id="limit" %LIMIT%><s></s></label></div>
+<div class="row"><div class="l"><div class="ic">🌙</div><div><b>Tự giảm sáng ban đêm</b><div class="sub">Cần có giờ (Wi-Fi hoặc app Android)</div></div></div><label class="sw"><input type="checkbox" name="ad" %AUTODIM%><s></s></label></div>
+<div class="row"><div class="l"><div class="ic">🔅</div><div><b>Độ sáng ban đêm</b></div></div><div class="rg"><input type="range" name="al" id="al" min="20" max="80" value="%DIMLVL%"><output id="alo">%DIMLVL%%</output></div></div>
+<div class="row"><div class="l"><div class="ic">🕘</div><div><b>Khung giờ giảm sáng</b><div class="sub">Từ giờ → đến giờ (0–23)</div></div></div><div class="rg"><input type="number" name="af" min="0" max="23" value="%DIMFROM%">→<input type="number" name="at" min="0" max="23" value="%DIMTO%"></div></div>
 </div></section>
 
 <section id="s2"><h2>Cảnh báo Waze</h2><div class="card">
@@ -3263,6 +3368,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <div class="row"><div class="l"><div class="ic">🚧</div><div><b>Công trường</b></div></div><label class="sw"><input type="checkbox" name="a_work" %AWORK%><s></s></label></div>
 <div class="row"><div class="l"><div class="ic">⚠️</div><div><b>Nguy hiểm khác</b><div class="sub">Ổ gà, vật cản, đóng đường, thời tiết, làn bị chặn…</div></div></div><label class="sw"><input type="checkbox" name="a_hazard" %AHAZARD%><s></s></label></div>
 <div class="row"><div class="l"><div class="ic">🪧</div><div><b>Biển báo</b><div class="sub">Giới hạn sắp tới, cấm rẽ/quay đầu, thu phí, đèn giao thông…</div></div></div><label class="sw"><input type="checkbox" name="a_signs" %ASIGNS%><s></s></label></div>
+<div class="row"><div class="l"><div class="ic">🔔</div><div><b>Còi báo động</b><div class="sub">Cần buzzer thụ động gắn GPIO32 (xem docs/WIRING.md)</div></div></div><label class="sw"><input type="checkbox" name="bz" %BUZZER%><s></s></label></div>
 </div></section>
 <section id="s3"><h2>Màn hình chờ</h2><div class="card">
 <div class="row"><div class="l"><div class="ic">🕒</div><div><b>Đồng hồ khi chưa kết nối</b><div class="sub">Giờ số, ngày tháng, âm lịch, nhiệt độ. Tự bật sau 30 giây mất kết nối điện thoại</div></div></div><label class="sw"><input type="checkbox" name="sb_on" %SBON%><s></s></label></div>
@@ -3292,7 +3398,18 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <form method="POST" action="/update-upload" enctype="multipart/form-data" style="margin-top:14px"><input type="file" name="firmware" accept=".bin,application/octet-stream" required><button class="sec" type="submit">Cập nhật thủ công từ firmware.bin</button></form>
 </div></section>
 
-<section id="s6"><h2>Thông tin thiết bị</h2><div class="card">
+<section id="s6"><h2>Hệ thống</h2><div class="card" style="padding-bottom:16px">
+<div class="row"><div class="l"><div class="ic">🔐</div><div><b>PIN Web Setting</b><div class="sub">Trạng thái: <span style="color:#eef4ff;font-weight:700">%PINSTATE%</span> · Tên đăng nhập: admin</div></div></div></div>
+<input id="pin" type="password" inputmode="numeric" placeholder="PIN mới 4–16 ký tự (trống = tắt)" autocomplete="new-password">
+<button type="button" class="sec" onclick="setPin()">Lưu PIN</button>
+<div class="row" style="margin-top:8px"><div class="l"><div class="ic">💾</div><div><b>Sao lưu / khôi phục</b><div class="sub">File JSON cài đặt (không gồm Wi-Fi và PIN)</div></div></div></div>
+<div class="grid"><button type="button" class="sec" onclick="location='/backup'">Tải file sao lưu</button><button type="button" class="sec" onclick="$('rf').click()">Khôi phục từ file</button></div>
+<input id="rf" type="file" accept=".json,application/json" style="display:none" onchange="restoreFile(this)">
+<div class="grid"><button type="button" class="sec" onclick="resetSettings()">Đặt lại mặc định</button><button type="button" class="sec" onclick="rebootNow()">Khởi động lại</button></div>
+<div class="st" style="margin-top:12px">Nút <b>BOOT</b> trên board: bấm ngắn = bật/tắt đồng hồ · giữ 1–5 giây = đổi độ sáng (100/70/40%) · giữ 10 giây = reset toàn bộ về mặc định (gồm Wi-Fi).</div>
+<div class="sub">Địa chỉ nhanh: <span class="mono">http://wazehud.local</span></div>
+</div></section>
+<section id="s7"><h2>Thông tin thiết bị</h2><div class="card">
 <div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b>v%VERSION%</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
 </div></section>
 <div class="foot">Waze HUD Mod · ledinhtien219</div>
@@ -3300,13 +3417,17 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <script>
 const $=i=>document.getElementById(i),f=$("f"),bar=$("bar");
 $("wx_city").value="%WXCITY%";
-function pv(){$("scr").classList.toggle("mir",$("mirror").checked);$("pRd").classList.toggle("off",!$("road").checked);$("pRt").classList.toggle("off",!$("route").checked);$("pEt").classList.toggle("off",!$("eta").checked);$("pLim").classList.toggle("off",!$("limit").checked);$("pAl").classList.toggle("off",!$("a_camera").checked);$("scr").style.filter="brightness("+(0.35+$("bright").value/100*.65)+")";$("bo").textContent=$("bright").value+"%"}
+function pv(){$("alo").textContent=$("al").value+"%";$("scr").classList.toggle("mir",$("mirror").checked);$("pRd").classList.toggle("off",!$("road").checked);$("pRt").classList.toggle("off",!$("route").checked);$("pEt").classList.toggle("off",!$("eta").checked);$("pLim").classList.toggle("off",!$("limit").checked);$("pAl").classList.toggle("off",!$("a_camera").checked);$("scr").style.filter="brightness("+(0.35+$("bright").value/100*.65)+")";$("bo").textContent=$("bright").value+"%"}
 f.addEventListener("input",()=>{pv();bar.classList.add("show")});pv();
 function toast(t){let e=$("toast");e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),2200)}
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};try{let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast("Đã gửi HUD mẫu")}catch(_){toast("Gửi thất bại")}}
 async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tra GitHub...";try{let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;$("latest").textContent=j.latest?("v"+j.latest):"--"}catch(_){e.textContent="Không kiểm tra được."}}
 async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");$("updatebar").style.width="0%";$("updatepct").textContent="0%";e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,700)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
 async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));$("updatebar").style.width=p+"%";$("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
+async function setPin(){let p=$("pin").value.trim();if(p&&(p.length<4||p.length>16)){toast("PIN từ 4–16 ký tự");return}if(!confirm(p?"Đặt PIN mới? Sau đó cần đăng nhập (admin).":"Tắt PIN?"))return;try{let r=await fetch("/security",{method:"POST",headers:{"Content-Type":"application/x-www-form-urlencoded"},body:"pin="+encodeURIComponent(p)});if(r.ok){toast("Đã lưu PIN");setTimeout(()=>location.reload(),900)}else toast(await r.text())}catch(_){toast("Lỗi mạng")}}
+async function restoreFile(i){let f=i.files[0];if(!f)return;try{let txt=await f.text();JSON.parse(txt);let r=await fetch("/restore",{method:"POST",headers:{"Content-Type":"application/json"},body:txt});let j=await r.json();toast(j.ok?"Đã khôi phục":"Khôi phục lỗi");if(j.ok)setTimeout(()=>location.reload(),900)}catch(_){toast("File không hợp lệ")}i.value=""}
+async function resetSettings(){if(!confirm("Đặt lại toàn bộ cài đặt HUD về mặc định? (Wi-Fi và PIN được giữ)"))return;try{await fetch("/reset-settings",{method:"POST"});toast("Đã đặt lại");setTimeout(()=>location.reload(),900)}catch(_){toast("Lỗi mạng")}}
+async function rebootNow(){if(!confirm("Khởi động lại Waze HUD?"))return;try{await fetch("/reboot",{method:"POST"})}catch(_){}toast("Đang khởi động lại...")}
 async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
 async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?("Hiện tại: "+Math.round(j.temp)+"°C"):"Chưa có dữ liệu nhiệt độ"}catch(_){}}
 poll();setInterval(poll,2500);
@@ -3327,6 +3448,10 @@ addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offs
   html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
   html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
   html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
+  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
+  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
+  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
+  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
   html.replace("%MIRROR%", checked(settings.mirrorHud));
   html.replace("%ROAD%", checked(settings.showRoad));
   html.replace("%ROUTE%", checked(settings.showRoute));
@@ -3343,13 +3468,30 @@ addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offs
   html.replace("%SBLUNAR%", checked(settings.sbLunar));
   html.replace("%SBTEMP%", checked(settings.sbTemp));
   html.replace("%WXCITY%", String(settings.wxCity));
+  html.replace("%AUTODIM%", checked(settings.autoDim));
+  html.replace("%DIMLVL%", String(settings.dimLevel));
+  html.replace("%DIMFROM%", String(settings.dimFrom));
+  html.replace("%DIMTO%", String(settings.dimTo));
+  html.replace("%BUZZER%", checked(settings.buzzer));
+  html.replace("%PINSTATE%", webPin.length() ? "Đã bật" : "Chưa đặt");
   html.replace("%AUTOUPDATE%", checked(settings.autoUpdateCheck));
   html.replace("%BRIGHT%", String(settings.brightness));
   return html;
 }
 
+static bool webAuthed() {
+  if (!webPin.length()) return true;
+  return server.authenticate("admin", webPin.c_str());
+}
+static bool webAuth() {
+  if (webAuthed()) return true;
+  server.requestAuthentication(BASIC_AUTH, "Waze HUD", "Nhap PIN (user: admin)");
+  return false;
+}
+
 void setupServer() {
   server.on("/", HTTP_GET, []() {
+    if (!webAuth()) return;
     server.sendHeader("Cache-Control","no-store");
     server.send(200, "text/html; charset=utf-8", pageHtml());
   });
@@ -3365,6 +3507,7 @@ void setupServer() {
   });
 
   server.on("/settings", HTTP_POST, []() {
+    if (!webAuth()) return;
     settings.mirrorHud = server.hasArg("mirror");
     settings.nightMode = true;
     settings.showRoad = server.hasArg("road");
@@ -3378,6 +3521,11 @@ void setupServer() {
     settings.alertRoadworks = server.hasArg("a_work");
     settings.alertHazard = server.hasArg("a_hazard");
     settings.alertSigns = server.hasArg("a_signs");
+    settings.autoDim = server.hasArg("ad");
+    settings.dimLevel = constrain(server.arg("al").toInt(), 20, 80);
+    settings.dimFrom = constrain(server.arg("af").toInt(), 0, 23);
+    settings.dimTo = constrain(server.arg("at").toInt(), 0, 23);
+    settings.buzzer = server.hasArg("bz");
     settings.standbyClock = server.hasArg("sb_on");
     settings.sbLunar = server.hasArg("sb_lunar");
     settings.sbTemp = server.hasArg("sb_temp");
@@ -3399,6 +3547,7 @@ void setupServer() {
   });
 
   server.on("/wifi", HTTP_POST, []() {
+    if (!webAuth()) return;
     String s=server.arg("ssid"); s.trim(); String p=server.arg("pass");
     if(!s.length()){server.send(400,"text/plain","SSID required");return;}
     prefs.begin("wazehud",false); prefs.putString("ssid",s); prefs.putString("pass",p); prefs.end();
@@ -3407,6 +3556,7 @@ void setupServer() {
   });
 
   server.on("/update-check", HTTP_POST, []() {
+    if (!webAuth()) return;
     bool ok = checkForUpdate();
     JsonDocument d; d["ok"]=ok; d["current"]=FW_VERSION; d["latest"]=latestVersion;
     d["available"]=updateAvailable; d["message"]=updateMessage;
@@ -3414,6 +3564,7 @@ void setupServer() {
   });
 
   server.on("/update-auto", HTTP_POST, []() {
+    if (!webAuth()) return;
     settings.autoUpdateCheck = server.arg("enabled")=="1";
     prefs.begin("wazehud",false); prefs.putBool("autoupdate",settings.autoUpdateCheck); prefs.end();
     publishStudioState(true);
@@ -3421,6 +3572,7 @@ void setupServer() {
   });
 
   server.on("/update-online", HTTP_POST, []() {
+    if (!webAuth()) return;
     if (otaInProgress || otaRequested) {
       server.send(409, "text/plain; charset=utf-8", "Đang có một phiên cập nhật chạy.");
       return;
@@ -3450,6 +3602,7 @@ void setupServer() {
 
   server.on("/update-upload", HTTP_POST,
     []() {
+      if (!webAuth()) return;
       bool ok = !Update.hasError();
       if (ok) {
         otaPercent = 100;
@@ -3468,6 +3621,7 @@ void setupServer() {
     },
     []() {
       HTTPUpload &upload = server.upload();
+      if (!webAuthed()) return;   // PIN set: ignore unauthenticated uploads
       if (upload.status == UPLOAD_FILE_START) {
         otaInProgress = true;
         otaPercent = 0;
@@ -3538,9 +3692,59 @@ void setupServer() {
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
     d["over"]=hud.overSpeed; d["layout"]=settings.hudStyle; d["next_speed_limit"]=hud.nextSpeedLimit;
     d["next_speed_distance_m"]=hud.nextSpeedDistanceM;
+    d["bright_eff"]=effBright; d["mdns"]="wazehud.local"; d["pin"]=webPin.length()>0;
     d["standby"]=sbActive; d["city"]=WX_CITIES[settings.wxCity].name;
     if (!isnan(wxTempC)) d["temp"]=wxTempC;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
+  });
+
+  server.on("/security", HTTP_POST, []() {
+    if (!webAuth()) return;
+    String pin = server.arg("pin");
+    pin.trim();
+    if (pin.length() && (pin.length() < 4 || pin.length() > 16)) {
+      server.send(400, "text/plain; charset=utf-8", "PIN phải từ 4 đến 16 ký tự (để trống để tắt PIN).");
+      return;
+    }
+    prefs.begin("wazehud", false); prefs.putString("webpin", pin); prefs.end();
+    webPin = pin;
+    server.send(200, "text/html; charset=utf-8",
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<body style='background:#06080d;color:#eef4ff;font-family:system-ui;padding:28px'>"
+                "<h2>" + String(pin.length() ? "Đã đặt PIN" : "Đã tắt PIN") + "</h2>"
+                "<p>Tên đăng nhập: <b>admin</b></p><a style='color:#28d7ff' href='/'>Về trang cài đặt</a></body>");
+  });
+
+  server.on("/backup", HTTP_GET, []() {
+    if (!webAuth()) return;
+    server.sendHeader("Content-Disposition", "attachment; filename=wazehud-settings.json");
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", studioSettingsJson());
+  });
+
+  server.on("/restore", HTTP_POST, []() {
+    if (!webAuth()) return;
+    applyStudioSettings(server.arg("plain"));
+    JsonDocument d; d["ok"] = (studioMessage == "settings_saved"); d["message"] = studioMessage;
+    String out; serializeJson(d, out);
+    server.send(200, "application/json", out);
+  });
+
+  server.on("/reset-settings", HTTP_POST, []() {
+    if (!webAuth()) return;
+    resetStudioSettingsToDefaults();
+    wxTempC = NAN; wxCode = -1; wxTried = false; wxDirty = true;
+    updateEffectiveBrightness(true);
+    hudRenderValid = false;
+    if (hud.valid) drawHud(); else drawWaiting();
+    server.sendHeader("Location", "/", true);
+    server.send(303, "text/plain", "");
+  });
+
+  server.on("/reboot", HTTP_POST, []() {
+    if (!webAuth()) return;
+    server.send(200, "text/html; charset=utf-8", "<h2>Đang khởi động lại...</h2>");
+    studioRestartAt = millis() + 800;
   });
 
   server.onNotFound([](){if(apMode){server.sendHeader("Location","http://192.168.4.1/",true);server.send(302,"text/plain","");}else server.send(404,"text/plain","Not found");});
@@ -3619,6 +3823,16 @@ void connectWiFi() {
   Serial.println((int)lastWifiDisconnectReason);
 }
 
+static bool mdnsStarted = false;
+static void startMdns() {
+  if (mdnsStarted) return;
+  if (MDNS.begin("wazehud")) {
+    MDNS.addService("http", "tcp", 80);
+    mdnsStarted = true;
+    Serial.println("mDNS: http://wazehud.local");
+  }
+}
+
 void maintainWiFi() {
   wl_status_t status = WiFi.status();
 
@@ -3633,6 +3847,7 @@ void maintainWiFi() {
       configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
       ntpConfigured = true;
     }
+    startMdns();
     if (apMode) {
       // Keep AP alive only until the STA succeeds. This avoids routing
       // confusion while still allowing setup during failures.
@@ -3650,6 +3865,8 @@ void maintainWiFi() {
     }
     return;
   }
+
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }   // restart once Wi-Fi is back
 
   if (!wifiSSID.length()) {
     if (!apMode) startSetupAP();
@@ -3677,6 +3894,11 @@ void maintainWiFi() {
 
 void setup() {
   Serial.begin(115200);
+  setenv("TZ", "ICT-7", 1);   // Vietnam time, also when the clock comes from the phone over BLE
+  tzset();
+  pinMode(BTN_PIN, INPUT_PULLUP);
+  pinMode(BUZZER_PIN, OUTPUT);
+  buzInit();
 
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
     if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
@@ -3700,6 +3922,7 @@ void setup() {
 
   updateBootProgress(18, "LOADING SETTINGS");
   loadAppSettings();
+  updateEffectiveBrightness(true);
 
   // Bring BLE up before Wi-Fi. Besides making Studio available earlier, this
   // avoids enabling the BT controller after Wi-Fi has entered a bad coexistence
@@ -3732,6 +3955,9 @@ void setup() {
 
   Serial.print("Waze HUD IP: ");
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
+
+  wdLastLoop = millis();
+  xTaskCreatePinnedToCore(watchdogTask, "wd", 3072, nullptr, 1, nullptr, 0);
 }
 
 
@@ -3759,7 +3985,121 @@ void updateOverspeedEffect() {
 }
 
 
+
+// ---------------- Hardware button (BOOT / GPIO0) ----------------
+// short press: clock screen on/off | 1-5 s: brightness preset | 10 s: factory reset
+static void factoryReset() {
+  Serial.println("Factory reset requested");
+  prefs.begin("wazehud", false);
+  prefs.clear();
+  prefs.end();
+  delay(300);
+  ESP.restart();
+}
+
+static void handleButton() {
+  static bool down = false;
+  static uint32_t t0 = 0;
+  const bool pressed = digitalRead(BTN_PIN) == LOW;
+  const uint32_t now = millis();
+  if (pressed && !down) {
+    down = true; t0 = now;
+  } else if (!pressed && down) {
+    down = false;
+    uint32_t d = now - t0;
+    if (d >= 40 && d < 1000) {
+      if (settings.standbyClock) {
+        forceClock = !forceClock;
+        if (forceClock) drawStandby();
+        else if (hud.valid) { hudRenderValid = false; drawHud(); }
+        else drawWaiting();
+      }
+    } else if (d >= 1000 && d < 5000) {
+      btnBrightPct = btnBrightPct == 0 ? 70 : (btnBrightPct == 70 ? 40 : 0);
+      updateEffectiveBrightness(true);
+    }
+  } else if (pressed && down && now - t0 >= 10000) {
+    factoryReset();
+  }
+}
+
+// ---------------- Buzzer (optional piezo on BUZZER_PIN) ----------------
+struct BuzStep { uint16_t freq; uint16_t ms; };   // freq 0 = silence
+static const BuzStep BUZ_ALERT_HIGH[] = {{2400, 90}, {0, 70}, {2400, 90}};
+static const BuzStep BUZ_ALERT_MID[]  = {{1800, 220}};
+static const BuzStep BUZ_OVERSPEED[]  = {{2800, 60}, {0, 50}, {2800, 60}, {0, 50}, {2800, 60}};
+static const BuzStep *buzSeq = nullptr;
+static uint8_t buzLen = 0, buzPos = 0;
+static uint32_t buzStepAt = 0;
+
+static void buzTone(int freq) {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWriteTone(BUZZER_PIN, freq);
+#else
+  ledcWriteTone(BUZ_CH, freq);
+#endif
+}
+
+static void buzInit() {
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcAttach(BUZZER_PIN, 2000, 8);
+#else
+  ledcSetup(BUZ_CH, 2000, 8);
+  ledcAttachPin(BUZZER_PIN, BUZ_CH);
+#endif
+  buzTone(0);
+}
+
+static void buzPlay(const BuzStep *seq, uint8_t len) {
+  if (!settings.buzzer) return;
+  buzSeq = seq; buzLen = len; buzPos = 0; buzStepAt = 0;
+}
+
+static void buzTick() {
+  if (!buzSeq) return;
+  uint32_t now = millis();
+  if (buzStepAt && (int32_t)(now - buzStepAt) < 0) return;
+  if (buzPos >= buzLen) { buzTone(0); buzSeq = nullptr; return; }
+  buzTone(buzSeq[buzPos].freq);
+  buzStepAt = now + buzSeq[buzPos].ms;
+  buzPos++;
+}
+
+// Beeps once per new alert (and once when overspeed starts).
+static void updateBuzzerTriggers() {
+  static uint8_t lastAlertCode = 0;
+  static bool lastOver = false;
+  const bool fresh = hud.valid && (millis() - hud.updatedAt <= HUD_STALE_MS);
+  if (!settings.buzzer || !fresh) { lastAlertCode = 0; lastOver = false; return; }
+  const bool near = hud.alertDistanceM < 0 || hud.alertDistanceM <= 1500;
+  uint8_t code = (hud.alert != ALERT_NONE && alertEnabled(hud.alert) && near) ? hud.alertCode : 0;
+  if (code && code != lastAlertCode) {
+    if (hud.alert == ALERT_POLICE || hud.alert == ALERT_CAMERA) buzPlay(BUZ_ALERT_HIGH, 3);
+    else buzPlay(BUZ_ALERT_MID, 1);
+  }
+  lastAlertCode = code;
+  if (hud.overSpeed && !lastOver) buzPlay(BUZ_OVERSPEED, 5);
+  lastOver = hud.overSpeed;
+}
+
+// ---------------- Software watchdog ----------------
+// Restarts the board if loop() stops running for WATCHDOG_MS (not while flashing firmware).
+static volatile uint32_t wdLastLoop = 0;
+static void watchdogTask(void *) {
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    if (wdLastLoop && !otaInProgress && !otaRequested && millis() - wdLastLoop > WATCHDOG_MS) {
+      Serial.println("Watchdog: loop stalled, restarting");
+      delay(100);
+      ESP.restart();
+    }
+  }
+}
+
 void loop() {
+  wdLastLoop = millis();
+  handleButton();
+  buzTick();
   // Drain GATT bytes outside the Bluetooth callback. This prevents TFT/JSON work
   // from blocking acknowledged BLE writes.
   processBleInput();
@@ -3796,6 +4136,8 @@ void loop() {
 
   if (!otaInProgress) maintainWiFi();
   updateOverspeedEffect();
+  updateEffectiveBrightness(false);
+  updateBuzzerTriggers();
   updateStandbyScreen(false);
   maintainWeather();
   lvUiPump();
