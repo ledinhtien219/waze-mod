@@ -2337,7 +2337,8 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
 
 
 String studioSettingsJson() {
-  // Compact keys keep the characteristic comfortably below a normal BLE MTU.
+  // Compact keys keep the characteristic within GATT value limits. The Web Studio
+  // writes the main and standby groups separately so each write stays small.
   JsonDocument d;
   d["m"] = settings.mirrorHud;
   d["n"] = settings.nightMode;
@@ -2357,6 +2358,10 @@ String studioSettingsJson() {
   d["sg"] = settings.alertSigns;
   d["au"] = settings.autoUpdateCheck;
   d["style"] = settings.hudStyle;
+  d["sb"] = settings.standbyClock;
+  d["sl"] = settings.sbLunar;
+  d["st"] = settings.sbTemp;
+  d["wc"] = settings.wxCity;
   String out;
   serializeJson(d, out);
   return out;
@@ -2490,6 +2495,14 @@ void resetStudioSettingsToDefaults() {
   settings.autoUpdateCheck = true;
   settings.brightness = 100;
   settings.hudStyle = 3;
+  settings.standbyClock = true;
+  settings.sbLunar = true;
+  settings.sbTemp = true;
+  settings.wxCity = 0;
+  wxTempC = NAN;
+  wxCode = -1;
+  wxTried = false;
+  wxDirty = true;
   saveAppSettings();
 }
 
@@ -2518,6 +2531,19 @@ void applyStudioSettings(const String &payload) {
   if (!d["haz"].isNull()) settings.alertHazard = (bool)d["haz"];
   if (!d["sg"].isNull()) settings.alertSigns = (bool)d["sg"];
   if (!d["au"].isNull()) settings.autoUpdateCheck = (bool)d["au"];
+  if (!d["sb"].isNull()) settings.standbyClock = (bool)d["sb"];
+  if (!d["sl"].isNull()) settings.sbLunar = (bool)d["sl"];
+  if (!d["st"].isNull()) settings.sbTemp = (bool)d["st"];
+  if (!d["wc"].isNull()) {
+    uint8_t city = (uint8_t)constrain(d["wc"].as<int>(), 0, WX_CITY_COUNT - 1);
+    if (city != settings.wxCity) {
+      settings.wxCity = city;
+      wxTempC = NAN;
+      wxCode = -1;
+      wxTried = false;
+      wxDirty = true;
+    }
+  }
 
   saveAppSettings();
   studioMessage = "settings_saved";
