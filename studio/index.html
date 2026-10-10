@@ -31,7 +31,7 @@ section{margin-top:18px;scroll-margin-top:60px}section>h2{font-size:12px;letter-
 .rg{display:flex;align-items:center;gap:10px}.rg output{min-width:40px;text-align:right;font-weight:800;color:var(--cy)}
 input[type=range]{-webkit-appearance:none;appearance:none;width:140px;height:6px;border-radius:9px;background:#26364b;outline:0}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px #1597ff77}input[type=range]::-moz-range-thumb{width:24px;height:24px;border:0;border-radius:50%;background:#fff}
 input[type=text],input[type=password]{width:100%;padding:14px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:15px;margin:6px 0;outline:0}input[type=text]:focus,input[type=password]:focus{border-color:var(--bl);box-shadow:0 0 0 3px #1597ff33}
-select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}
+select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}.filebox{margin-top:14px;padding:14px;border:1px solid #29445f;border-radius:16px;background:linear-gradient(180deg,#0b1826,#08111b)}.filehead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.filehead b{font-size:14px}.filetag{font-size:10px;letter-spacing:1px;color:var(--cy);border:1px solid #245270;background:#0a2231;border-radius:99px;padding:4px 8px;font-weight:800}.filemeta{margin:8px 2px 0;color:#a8bad0;font-size:12px;word-break:break-all}.filemeta.ready{color:var(--gr)}.filemeta.bad{color:var(--rd)}.filebox button{margin-top:10px}
 button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px;background:var(--g);color:#031321;width:100%;margin-top:8px;cursor:pointer;transition:.15s}button:active{transform:scale(.97)}button.sec{background:#17263a;color:var(--tx);border:1px solid #27405c}button:disabled{opacity:.5}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.st{padding:12px;border-radius:13px;background:#08121d;border:1px solid #17283b;color:var(--mu);margin:10px 0;font-size:13px}.ok{color:var(--gr)}.warn{color:var(--am)}
 .pb{height:10px;background:#08121d;border:1px solid #1f3248;border-radius:99px;overflow:hidden}.pb div{height:100%;width:0;background:var(--g);transition:width .3s}.pct{text-align:right;color:var(--mu);font-size:12px;margin-top:4px}
@@ -95,7 +95,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <div class="pb"><div id="updatebar"></div></div><div id="updatepct" class="pct">0%</div>
 <div class="grid"><button type="button" onclick="checkUpdate()">Kiểm tra cập nhật</button><button type="button" class="sec" onclick="installUpdate()">Tải về & cập nhật</button></div>
 <div class="sub" style="margin-top:8px">Tải trực tiếp từ GitHub Release. Không tắt nguồn khi đang cập nhật.</div>
-<form id="manualForm" method="POST" action="/update-upload" enctype="multipart/form-data" style="margin-top:14px"><input type="file" name="firmware" accept=".bin,application/octet-stream" required><button class="sec" type="submit">Cập nhật thủ công từ firmware.bin</button></form>
+<div class="filebox"><div class="filehead"><div><b>Firmware từ máy</b><div class="sub">Chọn file <span class="mono">firmware.bin</span> đã tải về máy.</div></div><span class="filetag">LOCAL BIN</span></div><form id="manualForm" method="POST" action="/update-upload" enctype="multipart/form-data"><input id="manualFile" type="file" name="firmware" accept=".bin,application/octet-stream" required><div id="manualMeta" class="filemeta">Chưa chọn file .bin</div><button id="manualBtn" class="sec" type="submit" disabled>⬆ Cài firmware từ máy</button><div id="manualNote" class="sub" style="margin-top:8px"></div></form></div>
 </div></section>
 
 <section id="s6"><h2>Thông tin thiết bị</h2><div class="card">
@@ -138,6 +138,27 @@ async function saveAuto(){try{if(IS_LOCAL)await fetch('/update-auto?enabled='+($
 async function sendTest(){if(!IS_LOCAL){$("testmsg").textContent='Gửi HUD mẫu chỉ khả dụng khi mở trang từ IP của HUD.';return}let b={turn:'right',distance_m:350,road:'Vo Nguyen Giap',speed:62,speed_limit:60,remaining_km:8.6,eta:'10:42',route:'QL1A',alert:{type:'camera',distance_m:500}};try{let r=await fetch('/hud',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast('Đã gửi HUD mẫu')}catch(_){toast('Gửi thất bại')}}
 async function pollLocal(){if(!IS_LOCAL)return;try{let r=await fetch('/state',{cache:'no-store'}),j=await r.json();$("cBle").className='chip tap'+(j.ble?' on':'');$("cBle").textContent=j.ble?'BLE đã kết nối':'BLE chờ';$("cWifi").className='chip'+(j.wifi?' on':' warn');$("cWifi").textContent=j.wifi?'Wi-Fi OK':(j.ap_mode?'AP cài đặt':'Wi-Fi mất');$("cHud").className='chip'+(j.hud&&j.age_ms<6000?' on':'');$("cHud").textContent=j.hud&&j.age_ms<6000?'HUD đang chạy':'HUD chờ dữ liệu';$("cIp").textContent=j.ip||location.hostname;$("wifiState").textContent=j.wifi?'Đã kết nối':(j.ap_mode?'AP cài đặt':'Mất kết nối');$("wifiState").className=j.wifi?'ok':'warn';$("wifiIp").textContent=j.ip||location.hostname;$("hudState").textContent=j.hud&&j.age_ms<6000?'Đã nhận dữ liệu':'Đang chờ';$("heap").textContent=Math.round(j.heap_free/1024)+' KB';$("ssid").textContent=j.ssid||'--';$("cityNow").textContent=j.temp!==undefined?('Hiện tại: '+Math.round(j.temp)+'°C'):'Chưa có dữ liệu nhiệt độ'}catch(_){}}
 $("connectBtn").onclick=connectBle;$("cBle").onclick=()=>{if(!IS_LOCAL)connectBle()};
-if(IS_LOCAL){$("remoteConnect").classList.remove('show');$("manualForm").style.display='block';pollLocal();setInterval(pollLocal,2500)}else{$("remoteConnect").classList.add('show');$("manualForm").style.display='none';$("testBtn").disabled=true;$("testmsg").textContent='HUD mẫu chỉ dùng khi mở giao diện từ IP của HUD.';$("cityNow").textContent='Kết nối BLE để đọc cấu hình';}
+function updateManualFileUi(){
+ const input=$("manualFile"),meta=$("manualMeta"),btn=$("manualBtn"),note=$("manualNote"),file=input?.files?.[0];
+ meta.className="filemeta";
+ if(!file){meta.textContent="Chưa chọn file .bin";btn.disabled=true;return}
+ const ok=/\.bin$/i.test(file.name);
+ meta.textContent=file.name+" · "+(file.size/1048576).toFixed(2)+" MB";
+ meta.classList.add(ok?"ready":"bad");
+ btn.disabled=!ok||!IS_LOCAL;
+ if(!ok)note.textContent="Chỉ chấp nhận file .bin.";
+ else if(IS_LOCAL)note.textContent="Sẵn sàng cài trực tiếp vào HUD qua Wi-Fi.";
+ else note.textContent="Đã chọn file. Để cài, hãy mở trang Settings bằng địa chỉ IP của HUD.";
+}
+$("manualFile").addEventListener("change",updateManualFileUi);
+$("manualForm").addEventListener("submit",e=>{
+ const file=$("manualFile").files?.[0];
+ if(!file||!/\.bin$/i.test(file.name)){e.preventDefault();toast("Hãy chọn đúng file .bin");return}
+ if(!IS_LOCAL){e.preventDefault();toast("Mở trang bằng IP của HUD để cài file .bin");return}
+ if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật.")){e.preventDefault();return}
+ $("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD...";
+});
+if(IS_LOCAL){$("remoteConnect").classList.remove('show');$("manualNote").textContent="Chọn firmware.bin từ máy để cài trực tiếp vào HUD.";pollLocal();setInterval(pollLocal,2500)}else{$("remoteConnect").classList.add('show');$("manualNote").textContent="Có thể chọn file tại đây; để cài hãy mở trang Settings bằng IP của HUD.";$("testBtn").disabled=true;$("testmsg").textContent='HUD mẫu chỉ dùng khi mở giao diện từ IP của HUD.';$("cityNow").textContent='Kết nối BLE để đọc cấu hình';}
+updateManualFileUi();
 const L=[...document.querySelectorAll('nav a')],S=L.map(a=>document.querySelector(a.hash));addEventListener('scroll',()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offsetTop<=y)k=i});L.forEach((a,i)=>a.classList.toggle('act',i===k))},{passive:true});
 </script></main></body></html>
