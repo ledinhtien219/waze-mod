@@ -1,0 +1,58 @@
+name: Publish Firmware Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "studio/firmware.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build firmware
+        run: pio run -e esp32dev
+
+      - name: Read release version
+        id: meta
+        shell: bash
+        run: |
+          VERSION="$(python - <<'PY'
+          import json
+          with open("studio/firmware.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["version"])
+          PY
+          )"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=".pio/build/esp32dev/firmware.bin"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG"               --title "Waze HUD $TAG"               --target "$GITHUB_SHA"               --latest
+            gh release upload "$TAG" "$BIN#firmware.bin" --clobber
+          else
+            gh release create "$TAG" "$BIN#firmware.bin"               --title "Waze HUD $TAG"               --target "$GITHUB_SHA"               --generate-notes               --latest
+          fi
