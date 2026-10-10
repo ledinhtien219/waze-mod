@@ -76,26 +76,90 @@ button,input,select{font:inherit}button{cursor:pointer}
 #disconnectOverlay{position:absolute;z-index:50;left:990px;top:10px;width:171px;height:39px;border-radius:11px;background:#071b2d;border:1px solid #1b4d70;color:#dcecff;display:flex;align-items:center;padding:0 12px;gap:8px;font-size:11px;cursor:pointer}.discDot{width:11px;height:11px;border-radius:50%;background:#7c94aa}.discText b{display:block;font-size:11px}.discText small{color:#829fb7;font-size:9px}
 .modalWrap{position:fixed;inset:0;background:#0009;display:none;align-items:center;justify-content:center;z-index:1000;padding:20px}.modalWrap.show{display:flex}.modal{width:520px;max-width:95vw;background:linear-gradient(180deg,#081c2f,#05131f);border:1px solid #1d5c83;border-radius:16px;box-shadow:0 24px 80px #000a;padding:15px}.modalHead{display:flex;align-items:center}.modalTitle{font-size:18px;font-weight:900}.close{margin-left:auto;width:34px;height:34px;border-radius:9px;border:1px solid #285a7a;background:#071827;color:#eaf7ff}.modalBody{margin-top:12px}.modalRow{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid #143650;font-size:13px}.modalActions{display:flex;gap:8px;justify-content:flex-end;margin-top:12px}
 .toast{position:fixed;right:18px;bottom:18px;z-index:1100;padding:12px 14px;border:1px solid #1c6a97;border-radius:11px;background:#08243a;color:#e9f8ff;opacity:0;transform:translateY(14px);transition:.16s;pointer-events:none}.toast.show{opacity:1;transform:translateY(0)}
+
+/* === v1.7.7 Commercial / Responsive refinement === */
+:root{
+ --bg:#080b10;--panel:#10151c;--panel2:#151b23;--line:#27303a;--line2:#3c8fd8;
+ --text:#f5f7fa;--muted:#8d99a8;--blue:#2d8cff;--cyan:#55b7ff;--green:#32c48d;
+ --red:#ff5d67;--yellow:#e9b949;--purple:#8f9bad;--dark:#090d12
+}
+html,body{background:#080b10;color:var(--text)}
+#viewport{background:radial-gradient(circle at 78% -8%,rgba(45,140,255,.10),transparent 30%),#080b10}
+#stage{background:radial-gradient(circle at 72% 0%,rgba(45,140,255,.07),transparent 30%),linear-gradient(145deg,#0b0f14,#090d12 58%,#080b10)}
+.sidebar{background:linear-gradient(180deg,#0d1218,#090d12);border-color:#222c36}
+.logo{border-color:#4a9bf0;background:radial-gradient(circle at 34% 28%,#fff 0 23%,#bcdcff 24% 54%,#2d8cff 55%);box-shadow:0 0 20px rgba(45,140,255,.18)}
+.brandName span{color:#55a8ff}.version{border-color:#34485b;background:#151e28;color:#9bc9ff}
+.navItem{width:100%;text-align:left;background:transparent;border:1px solid transparent;color:#dbe2ea}
+.navItem:hover{background:#131a22;border-color:#27333f}.navItem.active{background:#172230;border-color:#315f8d;box-shadow:none}
+.active .navSub{color:#9fb6ca}.promo{border-color:#222e39;background:radial-gradient(circle at 68% 56%,rgba(45,140,255,.12),transparent 28%),linear-gradient(180deg,#121923,#0b1016 72%,#090d12)}
+.promo:after{background:linear-gradient(90deg,transparent,#458fca,transparent);box-shadow:0 -16px 35px rgba(45,140,255,.18)}
+.topbar{background:rgba(11,15,20,.96);border-color:#222c36;backdrop-filter:blur(16px)}
+.search,.statusChip,.topIcon,.restart{border-color:#29343f;background:linear-gradient(180deg,#151b22,#10151b)}
+.statusDot{background:#32c48d;box-shadow:0 0 10px rgba(50,196,141,.45)}
+.restart{color:#ff8f96;border-color:#64333a;background:#211316}
+.card{border-color:#27313c;background:linear-gradient(180deg,#11171e,#0d1218);box-shadow:0 14px 34px rgba(0,0,0,.28);border-radius:16px}
+.headIcon{border-color:#324354;background:#151f29;color:#73baff}
+.btn{border-color:#364450;background:linear-gradient(180deg,#18212a,#121920);color:#f1f5f9;box-shadow:none}
+.btn:hover{border-color:#526474;background:#1a2530}.btn.blue{background:#2d8cff;border-color:#4d9fff;color:white}.btn.green,.btn.yellow,.btn.purple{background:#18212a;border-color:#364450;color:#f1f5f9}.btn.red{background:#2a171a;border-color:#6d343a;color:#ff9ca2}
+.theme{border-color:#2a3540;background:#0d1319}.theme:hover{border-color:#4c6a85}.theme.sel{border-color:#4c9aec;box-shadow:0 0 0 2px rgba(45,140,255,.12)}.theme.sel .themeRadio{border-color:#4c9aec;background:#4c9aec}
+.wind.active{border-color:#4c9aec;box-shadow:0 0 0 2px rgba(45,140,255,.10)}
+.switch input:checked+span{background:#2d8cff;border-color:#4b9df2}.range,.smallRange{accent-color:#2d8cff}
+.tag{border-color:#2d6d58;background:#10251e;color:#72d9ae}.meter i,.progress i{background:linear-gradient(90deg,#2d8cff,#43a0ff)}
+#disconnectOverlay{background:#131a22;border-color:#344252}.discDot{background:#8290a0}
+.modal{background:linear-gradient(180deg,#141a21,#0d1218);border-color:#33404d}.close{border-color:#34424f;background:#151c23}
+.toast{border-color:#355e83;background:#142333}
+
+@media (max-width:980px){
+ html,body{min-width:0;overflow-x:hidden}
+ #viewport{overflow:visible;min-height:100vh}
+ #fit{height:auto!important;position:relative}
+ #stage{position:relative;width:100%;height:auto;min-height:100vh;transform:none!important;overflow:visible;padding:0 0 24px}
+ .sidebar{position:relative;left:auto;top:auto;width:100%;height:auto;padding:10px 12px 8px;border-right:0;border-bottom:1px solid #222c36;z-index:80}
+ .brand{height:48px;padding:0 2px}.logo{width:38px;height:38px;border-radius:12px;font-size:18px}.brandName{font-size:16px}.brandSub{font-size:8px}.version{font-size:9px}
+ .nav{display:flex;gap:7px;margin-top:7px;overflow-x:auto;padding:0 0 3px;scrollbar-width:none}.nav::-webkit-scrollbar{display:none}
+ .navItem{height:42px;min-width:max-content;width:auto;padding:7px 10px;border-radius:10px;gap:6px}.navIcon{width:auto;font-size:16px}.navTitle{font-size:11px}.navSub{display:none}
+ .promo{display:none}
+ .topbar{position:sticky;left:0;top:0;width:100%;height:58px;padding:8px 12px;z-index:70;gap:7px}
+ .search,.vehicle,.restart{display:none}.statusChip{margin:0;min-width:0;flex:1;height:40px;padding:0 10px}.statusMain{font-size:11px}.statusSub{font-size:8px}.topIcon{width:40px;height:40px;flex:0 0 40px}
+ #disconnectOverlay{display:none!important}
+ .card{position:relative!important;left:auto!important;top:auto!important;width:auto!important;height:auto!important;margin:12px 12px 0;padding:12px;scroll-margin-top:70px}
+ .head{height:auto;min-height:44px;align-items:flex-start;flex-wrap:wrap}.headTitle{font-size:15px}.headSub{font-size:9px}.headRight{width:auto;max-width:100%}
+ .preview{height:220px}.hud{padding:10px 11px;grid-template-columns:29% 44% 27%}.instr{font-size:11px}.arrow{font-size:57px}.distance{font-size:15px}.eta{font-size:10px;margin-top:7px}.eta span{font-size:11px}.speedRow{gap:8px;margin-top:27px}.speed{font-size:58px;letter-spacing:-2px}.unit{font-size:11px}.limit{width:48px;height:48px;border-width:5px;font-size:21px}.lanes{gap:6px;margin-top:13px}.lane{font-size:27px}.roadName{font-size:12px}.gps{font-size:10px}.traffic{font-size:24px;min-height:29px}.alertName{font-size:8px}.alertDist{font-size:12px}.clock{font-size:12px;margin-top:16px}
+ .themes{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.theme{height:108px}.thumb{height:74px}
+ .mirrorGrid{grid-template-columns:1fr 34px 1fr;gap:5px}.swap{width:32px;height:32px;font-size:16px}.windFrame{height:92px}.mirrorLabel{font-size:9px}
+ .hudControls{grid-template-columns:1fr;gap:7px}.hudControls>div:last-child{flex-wrap:wrap}.seg{width:100%}.seg button{flex:1;padding:0 8px}
+ .quickGrid{grid-template-columns:1fr 1fr}.quickGrid .btn{height:48px;padding:0 7px;font-size:10px}
+ .infoRow,.miniRow{min-height:34px;height:auto;padding:4px 0;font-size:11px}.meter{width:82px}
+ .wifiForm{grid-template-columns:1fr}.saveWifi{grid-column:auto}.input{height:36px}.saveWifi{height:36px}
+ .modalWrap{padding:12px;align-items:flex-end}.modal{width:100%;max-width:100%;max-height:88vh;overflow:auto;border-radius:18px 18px 12px 12px}.modalRow{font-size:12px}
+ .toast{left:12px;right:12px;bottom:12px;text-align:center}
+ .hot{display:none}
+}
+@media (max-width:560px){
+ .headRight{width:100%;display:grid;grid-template-columns:1fr 1fr}.headRight .btn{width:100%;padding:0 8px;font-size:10px}.headRight>*:only-child{grid-column:1/-1}
+ .preview{height:196px}.hud{grid-template-columns:31% 43% 26%;padding:9px 8px}.instr{font-size:10px}.arrow{font-size:50px}.speed{font-size:51px}.limit{width:44px;height:44px;font-size:19px}.lane{font-size:23px}.roadName{font-size:11px}.traffic{font-size:21px}
+ .themes{grid-template-columns:1fr 1fr}.themeName{font-size:9px;padding-left:18px}
+ .mirrorGrid{grid-template-columns:1fr}.swap{display:none}.windFrame{height:102px}.hudControls{font-size:10px}
+ .quickGrid{grid-template-columns:1fr}.quickGrid .btn{height:44px;font-size:11px}
+ .infoRow,.miniRow{grid-template-columns:minmax(0,1fr) auto;gap:6px}.select{max-width:140px}
+}
+
 </style>
 </head>
 <body>
 <div id="viewport"><div id="fit"><div id="stage">
 <aside class="sidebar">
- <div class="brand"><div class="logo">◡</div><div><div class="brandName">WAZE <span>HUD</span><span class="version">v1.7.4</span></div><div class="brandSub">SMART NAV DISPLAY</div></div></div>
- <div class="nav">
-  <div class="navItem active"><div class="navIcon">⌂</div><div><div class="navTitle">Tổng quan</div><div class="navSub">Trung tâm điều khiển</div></div></div>
-  <div class="navItem"><div class="navIcon">▣</div><div><div class="navTitle">Giao diện</div><div class="navSub">Chủ đề & bố cục</div></div></div>
-  <div class="navItem"><div class="navIcon">▤</div><div><div class="navTitle">Hiển thị</div><div class="navSub">Độ sáng, màu sắc, HUD</div></div></div>
-  <div class="navItem"><div class="navIcon">⚑</div><div><div class="navTitle">Dẫn đường</div><div class="navSub">Tùy chỉnh chỉ đường</div></div></div>
-  <div class="navItem"><div class="navIcon">⚠</div><div><div class="navTitle">Cảnh báo Waze</div><div class="navSub">Camera, tốc độ, nguy hiểm</div></div></div>
-  <div class="navItem"><div class="navIcon">⌁</div><div><div class="navTitle">Kết nối</div><div class="navSub">Wi‑Fi, Bluetooth, Điện thoại</div></div></div>
-  <div class="navItem"><div class="navIcon">🔊</div><div><div class="navTitle">Âm thanh</div><div class="navSub">Giọng nói, âm lượng</div></div></div>
-  <div class="navItem"><div class="navIcon">⚙</div><div><div class="navTitle">Hệ thống</div><div class="navSub">Ngôn ngữ, thời gian</div></div></div>
-  <div class="navItem"><div class="navIcon">☁</div><div><div class="navTitle">Cập nhật OTA</div><div class="navSub">Firmware & tính năng mới</div></div></div>
-  <div class="navItem"><div class="navIcon">🛠</div><div><div class="navTitle">Công cụ</div><div class="navSub">Sao lưu, khôi phục, chẩn đoán</div></div></div>
-  <div class="navItem"><div class="navIcon">ⓘ</div><div><div class="navTitle">Giới thiệu</div><div class="navSub">Thông tin thiết bị</div></div></div>
+ <div class="brand"><div class="logo">◡</div><div><div class="brandName">WAZE <span>HUD</span><span class="version">v1.7.7</span></div><div class="brandSub">SMART NAV DISPLAY</div></div></div>
+ <div class="nav" aria-label="Điều hướng Studio">
+  <button class="navItem active" data-target="previewCard" type="button"><div class="navIcon">⌂</div><div><div class="navTitle">Tổng quan</div><div class="navSub">HUD trực tiếp</div></div></button>
+  <button class="navItem" data-target="themeCard" type="button"><div class="navIcon">▣</div><div><div class="navTitle">Giao diện</div><div class="navSub">Chủ đề HUD</div></div></button>
+  <button class="navItem" data-target="displayCard" type="button"><div class="navIcon">▤</div><div><div class="navTitle">Hiển thị</div><div class="navSub">Màn hình & HUD</div></div></button>
+  <button class="navItem" data-target="alertCard" type="button"><div class="navIcon">⚠</div><div><div class="navTitle">Cảnh báo</div><div class="navSub">Waze alerts</div></div></button>
+  <button class="navItem" data-target="connectCard" type="button"><div class="navIcon">⌁</div><div><div class="navTitle">Kết nối</div><div class="navSub">BLE & Wi‑Fi</div></div></button>
+  <button class="navItem" data-target="otaCard" type="button"><div class="navIcon">☁</div><div><div class="navTitle">Cập nhật</div><div class="navSub">Firmware OTA</div></div></button>
+  <button class="navItem" data-target="infoCard" type="button"><div class="navIcon">ⓘ</div><div><div class="navTitle">Thiết bị</div><div class="navSub">Thông tin HUD</div></div></button>
  </div>
- <div class="promo"><div class="car"></div><div class="promoText">WAZE <span>HUD</span><small>SMART NAV DISPLAY<br>Biến Waze thành trợ lý lái xe chuyên nghiệp</small></div></div>
+ <div class="promo"><div class="car"></div><div class="promoText">WAZE <span>HUD</span><small>SMART NAV DISPLAY<br>Thông tin lái xe rõ ràng, đúng lúc</small></div></div>
 </aside>
 
 <header class="topbar">
@@ -140,7 +204,7 @@ button,input,select{font:inherit}button{cursor:pointer}
  <div class="head"><div class="headIcon">ⓘ</div><div><div class="headTitle">Thông tin thiết bị</div></div><div class="headRight"><button id="detailBtn" class="btn">Chi tiết</button></div></div>
  <div>
   <div class="infoRow"><span>Tên thiết bị</span><b id="devName">WAZE HUD</b></div>
-  <div class="infoRow"><span>Phiên bản firmware</span><span><b id="fw">v1.7.4</b> <span id="fwBadge" class="tag">Chưa kiểm tra</span></span></div>
+  <div class="infoRow"><span>Phiên bản firmware</span><span><b id="fw">v1.7.7</b> <span id="fwBadge" class="tag">Chưa kiểm tra</span></span></div>
   <div class="infoRow"><span>Địa chỉ IP</span><b id="ip">--</b></div>
   <div class="infoRow"><span>Địa chỉ MAC</span><b id="mac">--</b></div>
   <div class="infoRow"><span>Dữ liệu Waze</span><b id="hudFresh">Đang chờ</b></div>
@@ -182,6 +246,7 @@ button,input,select{font:inherit}button{cursor:pointer}
  <div class="miniRow"><span>Ùn tắc</span><label class="switch"><input id="traffic" type="checkbox" checked><span></span></label></div>
  <div class="miniRow"><span>Công trường</span><label class="switch"><input id="work" type="checkbox" checked><span></span></label></div>
  <div class="miniRow"><span>Nguy hiểm khác</span><label class="switch"><input id="hazard" type="checkbox" checked><span></span></label></div>
+ <div class="miniRow"><span>Biển báo</span><label class="switch"><input id="signs" type="checkbox" checked><span></span></label></div>
  <input id="autoUpdate" type="checkbox" checked hidden>
 </section>
 
@@ -198,7 +263,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 
 <section id="otaCard" class="card">
  <div class="head" style="height:40px"><div class="headIcon" style="width:30px;height:30px">☁</div><div><div class="headTitle" style="font-size:14px">Cập nhật Firmware</div></div></div>
- <div class="miniRow"><span>Phiên bản hiện tại</span><span><b id="fw2">v1.7.4</b> <span id="otaBadge" class="tag">Chưa kiểm tra</span></span></div>
+ <div class="miniRow"><span>Phiên bản hiện tại</span><span><b id="fw2">v1.7.7</b> <span id="otaBadge" class="tag">Chưa kiểm tra</span></span></div>
  <div class="updateBox"><div id="otaState" class="tag">Chưa kiểm tra</div><div class="progress"><i id="otaBar"></i></div><div style="display:flex;justify-content:space-between;color:#85a4be;font-size:9px"><span id="msg">Bạn đang sử dụng phiên bản mới nhất.</span><b id="pct">0%</b></div></div>
  <button id="checkBtn" class="btn blue" style="width:100%;margin-top:7px;height:29px">⟳ Kiểm tra cập nhật</button>
  <button id="manualBtn" class="btn" style="width:100%;margin-top:5px;height:29px">☁ Tải firmware thủ công (.bin)</button>
@@ -228,7 +293,7 @@ button,input,select{font:inherit}button{cursor:pointer}
 const UUID={service:'8a7e1001-4d6e-4c48-9a9d-484c504c0001',info:'8a7e1002-4d6e-4c48-9a9d-484c504c0001',settings:'8a7e1003-4d6e-4c48-9a9d-484c504c0001',wifi:'8a7e1004-4d6e-4c48-9a9d-484c504c0001',command:'8a7e1005-4d6e-4c48-9a9d-484c504c0001',status:'8a7e1006-4d6e-4c48-9a9d-484c504c0001',hud:'8a7e1007-4d6e-4c48-9a9d-484c504c0001'};
 let device,gatt,chars={},connected=false,lastSettings={},lastStatus={},lastInfo={};
 const $=id=>document.getElementById(id),enc=new TextEncoder(),dec=new TextDecoder();
-function fit(){const s=Math.min(window.innerWidth/1672,1);$('stage').style.transform='scale('+s+')';$('fit').style.height=(941*s)+'px'}addEventListener('resize',fit);fit();
+function fit(){if(window.innerWidth<=980){$('stage').style.transform='none';$('fit').style.height='auto';return}const s=Math.min(window.innerWidth/1672,1);$('stage').style.transform='scale('+s+')';$('fit').style.height=(941*s)+'px'}addEventListener('resize',fit);fit();
 function log(t){console.log('[WazeHUD]',t)}
 function toast(t){const e=$('toast');e.textContent=t;e.classList.add('show');clearTimeout(window.__to);window.__to=setTimeout(()=>e.classList.remove('show'),2200)}
 function jsonValue(v){
@@ -253,7 +318,7 @@ try{
 }
 lastInfo=await readJson(chars.info);lastSettings=await readJson(chars.settings);lastStatus=await readJson(chars.status);
 setConnected(true);applyInfo(lastInfo);applySettings(lastSettings);applyStatus(lastStatus);
-if(chars.hud) applyHud(await readJson(chars.hud)); else { $('hudFresh').textContent='Cần firmware v1.7.4'; toast('Đã kết nối. Cập nhật v1.7.4 để xem HUD realtime.'); }
+if(chars.hud) applyHud(await readJson(chars.hud)); else { $('hudFresh').textContent='Không có HUD realtime'; toast('Firmware hiện tại chưa hỗ trợ HUD realtime.'); }
 if(chars.hud) toast('Đã kết nối '+(device.name||'WazeHUD'))}catch(e){setConnected(false);log('BLE/JSON ERROR: '+e.message);toast('Không kết nối được: '+e.message)}}
 function applyInfo(i){$('devName').textContent=i.name||'WAZE HUD';if(i.fw){$('fw').textContent='v'+i.fw;$('fw2').textContent='v'+i.fw}$('mac').textContent=i.mac||'--'}
 function applySettings(s){
@@ -263,7 +328,7 @@ function applySettings(s){
  $('road').checked=!!s.road;$('route').checked=s.route!==false;$('eta').checked=s.eta!==false;$('limit').checked=!!s.limit;
  $('lanesToggle').checked=s.lane!==false;$('unitSelect').value=s.mph?'mph':'kmh';
  $('styleSelect').value=String(Number.isFinite(Number(s.style))?Number(s.style):3);
- $('camera').checked=!!s.cam;$('police').checked=!!s.p;$('crash').checked=!!s.cr;$('traffic').checked=!!s.tr;$('work').checked=!!s.wrk;$('hazard').checked=!!s.haz;$('autoUpdate').checked=!!s.au;
+ $('camera').checked=!!s.cam;$('police').checked=!!s.p;$('crash').checked=!!s.cr;$('traffic').checked=!!s.tr;$('work').checked=!!s.wrk;$('hazard').checked=!!s.haz;$('signs').checked=s.sg!==false;$('autoUpdate').checked=!!s.au;
  selectTheme(Number($('styleSelect').value),false);syncModal()
 }
 function applyStatus(s){
@@ -365,11 +430,12 @@ function selectTheme(style,announce=true){
  if(announce)toast('Đã chọn giao diện · bấm Lưu tất cả cài đặt');
 }
 document.querySelectorAll('.theme').forEach(el=>el.onclick=()=>selectTheme(Number(el.dataset.style)));
+document.querySelectorAll('.navItem[data-target]').forEach(el=>el.onclick=()=>{document.querySelectorAll('.navItem').forEach(n=>n.classList.remove('active'));el.classList.add('active');const target=$(el.dataset.target);target?.scrollIntoView({behavior:'smooth',block:'start'});});
 $('styleSelect').onchange=e=>selectTheme(Number(e.target.value));
 $('advancedThemeBtn').onclick=()=>openModal('settingsModal');
 $('unitSelect').onchange=()=>toast('Đơn vị sẽ áp dụng khi bấm Lưu tất cả cài đặt');
 
-function currentSettings(){return{m:$('mirror').checked,n:true,b:+$('brightness').value,road:$('road').checked,route:$('route').checked,eta:$('eta').checked,limit:$('limit').checked,lane:$('lanesToggle').checked,mph:$('unitSelect').value==='mph',style:+$('styleSelect').value,p:$('police').checked,cam:$('camera').checked,cr:$('crash').checked,tr:$('traffic').checked,wrk:$('work').checked,haz:$('hazard').checked,au:$('autoUpdate').checked}}
+function currentSettings(){return{m:$('mirror').checked,n:true,b:+$('brightness').value,road:$('road').checked,route:$('route').checked,eta:$('eta').checked,limit:$('limit').checked,lane:$('lanesToggle').checked,mph:$('unitSelect').value==='mph',style:+$('styleSelect').value,p:$('police').checked,cam:$('camera').checked,cr:$('crash').checked,tr:$('traffic').checked,wrk:$('work').checked,haz:$('hazard').checked,sg:$('signs').checked,au:$('autoUpdate').checked}}
 async function saveSettings(){if(!requireBle())return;try{const v=currentSettings();await writeJson(chars.settings,v);lastSettings=v;toast('Đã lưu cài đặt vào WazeHUD')}catch(e){toast(e.message)}}
 async function cmd(c){if(!requireBle())return;try{await writeJson(chars.command,{cmd:c});toast('Đã gửi lệnh '+c)}catch(e){toast(e.message)}}
 async function refreshAll(){if(!requireBle())return;try{await writeJson(chars.command,{cmd:'refresh'});lastInfo=await readJson(chars.info);lastSettings=await readJson(chars.settings);lastStatus=await readJson(chars.status);applyInfo(lastInfo);applySettings(lastSettings);applyStatus(lastStatus);if(chars.hud)applyHud(await readJson(chars.hud));toast('Đã làm mới trạng thái')}catch(e){toast(e.message)}}
