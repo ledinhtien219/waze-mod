@@ -73,7 +73,9 @@ Ví dụ chỉ cập nhật cảnh báo:
 
 ## Timeout
 
-Firmware đánh dấu dữ liệu cũ nếu không nhận packet mới trong 10 giây. Màn hình vẫn giữ dữ liệu cuối cùng nhưng hiện trạng thái `LINK LOST`.
+Firmware tô xám tốc độ nếu không nhận packet mới trong 3 giây, và hiện `LINK LOST` (ẩn tốc độ, giới hạn, cảnh báo) sau 6 giây.
+
+Lưu ý: frame HLP/1 `s` được coi là snapshot đầy đủ (field thiếu = không có giá trị). Quy tắc "giữ giá trị cũ" ở mục Partial updates chỉ áp dụng cho `POST /hud` dạng JSON.
 
 ## Recommended Android bridge policy
 
