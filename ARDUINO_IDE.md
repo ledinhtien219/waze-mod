@@ -15,6 +15,7 @@ ESP32_WAZE_HUD\
 ├── ESP32_WAZE_HUD.ino
 ├── lv_conf.h
 ├── build_opt.h
+├── bt_memory_guard.cpp
 ├── partitions.csv
 ├── vn_font_14.c
 ├── vn_font_18.c
@@ -28,7 +29,7 @@ and canvas APIs without relying on a global `lv_conf.h`.
 The included `lv_conf.h` remains as the matching PlatformIO/reference configuration, but
 Arduino IDE does not require you to copy it into `Documents\Arduino\libraries`.
 
-The sketch also provides a strong `btInUse()` hook. ESP32 Arduino core 2.0.17 calls this hook before `setup()`; returning `true` prevents the core from permanently releasing Bluetooth controller memory. This fixes the reboot loop at **34% / STARTING BLUETOOTH** where NimBLE reported `ESP_ERR_INVALID_STATE`.
+The sketch also provides a strong `btInUse()` hook in `bt_memory_guard.cpp`. ESP32 Arduino core 2.0.17 calls this hook before `setup()`; returning `true` prevents the core from permanently releasing Bluetooth controller memory. This fixes the reboot loop at **34% / STARTING BLUETOOTH** where NimBLE reported `ESP_ERR_INVALID_STATE`.
 
 ## Required versions
 
