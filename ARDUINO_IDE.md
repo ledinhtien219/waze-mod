@@ -25,6 +25,8 @@ ESP32_WAZE_HUD\
 entire Arduino build, including LVGL's own source files. This enables the required fonts
 and canvas APIs without relying on a global `lv_conf.h`.
 
+It also defines `CONFIG_ENABLE_ARDUINO_DEPENDS=1`. This is required by NimBLE-Arduino 1.4.3 on ESP32 Arduino core 2.0.17 so the core keeps Bluetooth controller memory reserved before `setup()` starts. Without this flag the HUD can reboot forever at **34% / STARTING BLUETOOTH** with `ESP_ERR_INVALID_STATE` from `esp_bt_controller_init()`.
+
 The included `lv_conf.h` remains as the matching PlatformIO/reference configuration, but
 Arduino IDE does not require you to copy it into `Documents\Arduino\libraries`.
 
