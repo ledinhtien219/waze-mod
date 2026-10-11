@@ -47,10 +47,19 @@ Use:
 
 ```text
 Board: ESP32 Dev Module
+Tools > Partition Scheme > Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)
 ```
 
-The included `partitions.csv` is the project partition table and gives the firmware enough
-OTA/application space.
+The **Partition Scheme** selection is needed so Arduino IDE uses the correct maximum sketch
+size during its final size check. The included local `partitions.csv` still overrides the
+actual flash layout and provides the project OTA layout:
+
+- app0: `0x1E0000`
+- app1: `0x1E0000`
+- SPIFFS: `0x30000`
+
+Do not use the default 1.2MB APP scheme; it will report **Sketch too big** even though the
+project's custom partition table has enough space.
 
 ## What the local LVGL config enables
 
