@@ -42,7 +42,7 @@ jobs:
           --output-dir arduino-build
           ESP32_WAZE_HUD
 
-      - name: Verify Bluetooth memory guard
+      - name: Verify Bluetooth HAL is linked
         shell: bash
         run: |
           ELF="$(find arduino-build -type f -name '*.elf' | head -n 1)"
@@ -50,19 +50,9 @@ jobs:
           test -n "$ELF"
           test -n "$NM"
           echo "ELF=$ELF"
-          "$NM" "$ELF" | grep -E ' [Tt] btInUse
-
-      - name: Package Arduino-ready source
-        run: |
-          zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
-
-      - name: Upload Arduino-ready source
-        uses: actions/upload-artifact@v4
-        with:
-          name: WazeHUD-ArduinoIDE-v1.7.7
-          path: WazeHUD-ArduinoIDE-v1.7.7.zip
-
-          echo "Verified: application provides strong btInUse symbol; BT memory is reserved before setup()."
+          "$NM" "$ELF" | grep -E ' [Tt] btStarted$'
+          "$NM" "$ELF" | grep -E ' [Tt] btInUse$'
+          echo "Verified: ESP32 Bluetooth HAL is linked before runtime."
 
       - name: Package Arduino-ready source
         run: |
