@@ -40,3 +40,13 @@ jobs:
           --board-options PartitionScheme=min_spiffs
           --warnings default
           ESP32_WAZE_HUD
+
+      - name: Package Arduino-ready source
+        run: |
+          zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
+
+      - name: Upload Arduino-ready source
+        uses: actions/upload-artifact@v4
+        with:
+          name: WazeHUD-ArduinoIDE-v1.7.7
+          path: WazeHUD-ArduinoIDE-v1.7.7.zip
