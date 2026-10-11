@@ -1,0 +1,38 @@
+name: Build Arduino IDE Sketch
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "ESP32_WAZE_HUD/**"
+      - ".github/workflows/build-arduino-ide.yml"
+  workflow_dispatch:
+
+jobs:
+  build-arduino:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Install ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "Adafruit GFX Library"
+          arduino-cli lib install "Adafruit ILI9341"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "lvgl@8.3.11"
+          arduino-cli lib install "NimBLE-Arduino@1.4.3"
+
+      - name: Compile Arduino sketch
+        run: |
+          arduino-cli compile             --fqbn esp32:esp32:esp32             --warnings default             ESP32_WAZE_HUD
