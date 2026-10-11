@@ -22,6 +22,15 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <NimBLEDevice.h>
 #include <esp_bt.h>
 #include <freertos/FreeRTOS.h>
+
+// ESP32 Arduino core 2.0.17 calls the weak btInUse() hook from initArduino()
+// before setup(). If it resolves false, the core permanently releases BTDM
+// controller memory and NimBLE later aborts at esp_bt_controller_init() with
+// ESP_ERR_INVALID_STATE. Provide a strong C-linkage hook in the application so
+// BLE memory is preserved from the very start of boot.
+extern "C" bool btInUse(void) {
+  return true;
+}
 #include <freertos/queue.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====

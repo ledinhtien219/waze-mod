@@ -39,16 +39,21 @@ jobs:
           --fqbn esp32:esp32:esp32
           --board-options PartitionScheme=min_spiffs
           --warnings default
+          --output-dir arduino-build
           ESP32_WAZE_HUD
 
       - name: Verify Bluetooth memory guard
         shell: bash
         run: |
-          ELF="$(find /tmp "$HOME/.cache/arduino" -type f -name '*.elf' 2>/dev/null | head -n 1)"
-          NM="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-nm' 2>/dev/null | head -n 1)"
+          ELF="$(find arduino-build -type f -name '*.elf' | head -n 1)"
+          NM="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-nm' | head -n 1)"
           test -n "$ELF"
           test -n "$NM"
+          echo "ELF=$ELF"
           "$NM" "$ELF" | grep -E ' [Tt] btInUse
+
+      - name: Package Arduino-ready source
+        run: |
           zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
 
       - name: Upload Arduino-ready source
@@ -57,7 +62,7 @@ jobs:
           name: WazeHUD-ArduinoIDE-v1.7.7
           path: WazeHUD-ArduinoIDE-v1.7.7.zip
 
-          echo "Verified: strong btInUse symbol keeps ESP32 BT memory reserved before setup()."
+          echo "Verified: application provides strong btInUse symbol; BT memory is reserved before setup()."
 
       - name: Package Arduino-ready source
         run: |
