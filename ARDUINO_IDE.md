@@ -21,9 +21,12 @@ ESP32_WAZE_HUD\
 └── vn_arrows_22.c
 ```
 
-The sketch includes its local `lv_conf.h` automatically. `build_opt.h` passes
-`-DLV_CONF_INCLUDE_SIMPLE` to the entire Arduino build, including LVGL's own source files,
-so you no longer need to copy `lv_conf.h` into `Documents\Arduino\libraries`.
+`build_opt.h` carries the LVGL configuration as compiler defines and applies it to the
+entire Arduino build, including LVGL's own source files. This enables the required fonts
+and canvas APIs without relying on a global `lv_conf.h`.
+
+The included `lv_conf.h` remains as the matching PlatformIO/reference configuration, but
+Arduino IDE does not require you to copy it into `Documents\Arduino\libraries`.
 
 ## Required versions
 
@@ -71,5 +74,5 @@ If NimBLE callbacks marked `override` fail, or `setScanResponse` is missing, Ard
 using **NimBLE-Arduino 2.x**. Install **1.4.3**.
 
 If only `lv_font_montserrat_14` exists but 12/18/24/40 are missing, make sure you opened
-the supplied `ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino` and that `lv_conf.h` is still in that
+the supplied `ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino` and that `build_opt.h` is still in the
 same sketch folder.
