@@ -1,37 +1,73 @@
 # Arduino IDE build guide
 
-The firmware is tested with the same dependency versions pinned by PlatformIO.
+This repository now includes a **ready-to-open Arduino sketch**.
+
+Open:
+
+```text
+ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino
+```
+
+Do **not** move only the `.ino` file to another folder. Keep these files together:
+
+```text
+ESP32_WAZE_HUD\
+├── ESP32_WAZE_HUD.ino
+├── lv_conf.h
+├── partitions.csv
+├── vn_font_14.c
+├── vn_font_18.c
+└── vn_arrows_22.c
+```
+
+The sketch includes its local `lv_conf.h` automatically, so you no longer need to copy
+`lv_conf.h` into `Documents\Arduino\libraries`.
 
 ## Required versions
 
-- ESP32 by Espressif Systems: **2.0.17**
-- LVGL: **8.3.11** (do not use LVGL 9.x)
-- NimBLE-Arduino by h2zero: **1.4.3** (do not use NimBLE-Arduino 2.x)
-- ArduinoJson: **7.x**
+Install these exact major versions in Arduino IDE:
+
+- **ESP32 by Espressif Systems: 2.0.17**
+- **LVGL: 8.3.11** — do not use LVGL 9.x
+- **NimBLE-Arduino by h2zero: 1.4.3** — do not use NimBLE-Arduino 2.x
+- **ArduinoJson: 7.x**
 - Adafruit GFX Library
 - Adafruit ILI9341
 
-## LVGL configuration for Arduino IDE
+Restart Arduino IDE after changing LVGL or NimBLE versions.
 
-PlatformIO passes `LV_CONF_INCLUDE_SIMPLE` and includes `src/lv_conf.h` automatically. Arduino IDE does not.
+## Board
 
-Copy this repository's `lv_conf.h` to the Arduino libraries directory **next to** the `lvgl` folder.
-
-Typical Windows path:
+Use:
 
 ```text
-C:\Users\<YOU>\Documents\Arduino\libraries\lv_conf.h
-C:\Users\<YOU>\Documents\Arduino\libraries\lvgl\
+Board: ESP32 Dev Module
 ```
 
-Then restart Arduino IDE.
+The included `partitions.csv` is the project partition table and gives the firmware enough
+OTA/application space.
 
-The supplied `lv_conf.h` enables the Montserrat 12/14/18/24/40 fonts and LVGL canvas APIs required by the HUD.
+## What the local LVGL config enables
 
-## Common version mismatch symptoms
+The included `lv_conf.h` enables:
 
-If errors mention `lv_draw_buf_t` instead of `lv_disp_draw_buf_t`, Arduino IDE is compiling against LVGL 9.x.
+- Montserrat 12
+- Montserrat 14
+- Montserrat 18
+- Montserrat 24
+- Montserrat 40
+- LVGL Canvas
 
-If errors say NimBLE callbacks marked `override` do not override, or `setScanResponse` is missing, Arduino IDE is compiling against NimBLE-Arduino 2.x.
+These are required by the HUD, standby clock, boot screen and OTA screen.
 
-Use the exact versions above.
+## Version mismatch symptoms
+
+If the compiler suggests `lv_draw_buf_t` instead of `lv_disp_draw_buf_t`, Arduino IDE is
+using **LVGL 9.x**. Install **8.3.11**.
+
+If NimBLE callbacks marked `override` fail, or `setScanResponse` is missing, Arduino IDE is
+using **NimBLE-Arduino 2.x**. Install **1.4.3**.
+
+If only `lv_font_montserrat_14` exists but 12/18/24/40 are missing, make sure you opened
+the supplied `ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino` and that `lv_conf.h` is still in that
+same sketch folder.
