@@ -20,6 +20,7 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
+#include <esp_bt.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -2733,6 +2734,58 @@ void processBleInput() {
   }
 }
 
+static const char *btControllerStatusName(esp_bt_controller_status_t status) {
+  switch (status) {
+    case ESP_BT_CONTROLLER_STATUS_IDLE: return "IDLE";
+    case ESP_BT_CONTROLLER_STATUS_INITED: return "INITED";
+    case ESP_BT_CONTROLLER_STATUS_ENABLED: return "ENABLED";
+    default: return "UNKNOWN";
+  }
+}
+
+bool prepareBtControllerForNimBLE() {
+  esp_bt_controller_status_t status = esp_bt_controller_get_status();
+  Serial.print("BT controller before NimBLE: ");
+  Serial.println(btControllerStatusName(status));
+
+  // NimBLE-Arduino 1.4.3 expects the controller to be IDLE because it performs
+  // esp_bt_controller_init() itself. If another Arduino/IDF component or a
+  // previous controller lifecycle left it INITED/ENABLED, init() aborts with
+  // ESP_ERR_INVALID_STATE. This sketch does not use Bluedroid/Classic BT, so
+  // it is safe to return the controller to IDLE before starting NimBLE.
+  if (status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+    esp_err_t err = esp_bt_controller_disable();
+    Serial.print("BT controller disable: ");
+    Serial.println(esp_err_to_name(err));
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+
+    uint32_t start = millis();
+    while (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED &&
+           millis() - start < 1000) {
+      delay(1);
+    }
+    status = esp_bt_controller_get_status();
+  }
+
+  if (status == ESP_BT_CONTROLLER_STATUS_INITED) {
+    esp_err_t err = esp_bt_controller_deinit();
+    Serial.print("BT controller deinit: ");
+    Serial.println(esp_err_to_name(err));
+    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
+
+    uint32_t start = millis();
+    while (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE &&
+           millis() - start < 1000) {
+      delay(1);
+    }
+    status = esp_bt_controller_get_status();
+  }
+
+  Serial.print("BT controller ready for NimBLE: ");
+  Serial.println(btControllerStatusName(status));
+  return status == ESP_BT_CONTROLLER_STATUS_IDLE;
+}
+
 void setupBLE() {
   bleRxQueue = xQueueCreate(16, sizeof(BleRxChunk));
   if (bleRxQueue == nullptr) {
@@ -2742,6 +2795,11 @@ void setupBLE() {
   studioRxQueue = xQueueCreate(8, sizeof(StudioRxEvent));
   if (studioRxQueue == nullptr) {
     Serial.println("ERROR: cannot create Studio RX queue");
+  }
+
+  if (!prepareBtControllerForNimBLE()) {
+    Serial.println("ERROR: Bluetooth controller could not be reset to IDLE");
+    return;
   }
 
   NimBLEDevice::init(BLE_DEVICE_NAME);
