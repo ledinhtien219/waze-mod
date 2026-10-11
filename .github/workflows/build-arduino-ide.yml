@@ -34,5 +34,9 @@ jobs:
           arduino-cli lib install "NimBLE-Arduino@1.4.3"
 
       - name: Compile Arduino sketch
-        run: |
-          arduino-cli compile             --fqbn esp32:esp32:esp32             --warnings default             ESP32_WAZE_HUD
+        run: >
+          arduino-cli compile
+          --fqbn esp32:esp32:esp32
+          --board-options PartitionScheme=min_spiffs
+          --warnings default
+          ESP32_WAZE_HUD
