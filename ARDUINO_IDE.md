@@ -14,14 +14,16 @@ Do **not** move only the `.ino` file to another folder. Keep these files togethe
 ESP32_WAZE_HUD\
 ├── ESP32_WAZE_HUD.ino
 ├── lv_conf.h
+├── build_opt.h
 ├── partitions.csv
 ├── vn_font_14.c
 ├── vn_font_18.c
 └── vn_arrows_22.c
 ```
 
-The sketch includes its local `lv_conf.h` automatically, so you no longer need to copy
-`lv_conf.h` into `Documents\Arduino\libraries`.
+The sketch includes its local `lv_conf.h` automatically. `build_opt.h` passes
+`-DLV_CONF_INCLUDE_SIMPLE` to the entire Arduino build, including LVGL's own source files,
+so you no longer need to copy `lv_conf.h` into `Documents\Arduino\libraries`.
 
 ## Required versions
 
