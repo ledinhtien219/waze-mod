@@ -20,6 +20,15 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
+
+#if !__has_include(<NimBLECppVersion.h>)
+#error "WazeHUD requires NimBLE-Arduino 2.5.1. Arduino IDE is using NimBLE 1.x. Remove the old NimBLE-Arduino folder from your sketchbook libraries directory, install NimBLE-Arduino 2.5.1, restart Arduino IDE, then compile again."
+#endif
+#include <NimBLECppVersion.h>
+#if NIMBLE_CPP_VERSION_MAJOR != 2 || NIMBLE_CPP_VERSION_MINOR != 5 || NIMBLE_CPP_VERSION_PATCH != 1
+#error "WazeHUD requires exactly NimBLE-Arduino 2.5.1. Select version 2.5.1 in Arduino Library Manager."
+#endif
+
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 

@@ -50,3 +50,22 @@ NimBLE HLP/1 + Studio advertising as WazeHUD, address: ...
 ```
 
 There must be no reference to `NimBLEDevice.cpp line 880` from NimBLE-Arduino 1.4.3.
+
+
+## If Arduino still reports NimBLE 1.x API errors
+
+If errors say that `NimBLEDevice::init()` returns `void`, `getVersion()` does not
+exist, callbacks with `NimBLEConnInfo&` do not override, or advertising only has
+`setScanResponse()`, Arduino is still compiling NimBLE-Arduino 1.x.
+
+On the affected Windows setup the old library has previously been loaded from:
+
+```text
+C:\Users\ledin\1\libraries\NimBLE-Arduino
+```
+
+Move or delete that whole folder **outside the `libraries` directory**, restart Arduino
+IDE, then install exactly **NimBLE-Arduino 2.5.1** from Library Manager.
+
+The sketch now has a compile-time version gate, so it will produce one clear version
+error if the wrong NimBLE library is selected.
