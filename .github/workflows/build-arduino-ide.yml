@@ -49,10 +49,8 @@ jobs:
           NM="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-nm' | head -n 1)"
           test -n "$ELF"
           test -n "$NM"
-          echo "ELF=$ELF"
           "$NM" "$ELF" | grep -E ' [Tt] btStarted$'
           "$NM" "$ELF" | grep -E ' [Tt] btInUse$'
-          echo "Verified: ESP32 Bluetooth HAL is linked before runtime."
 
       - name: Verify BT memory release guard
         shell: bash
@@ -63,25 +61,8 @@ jobs:
           test -n "$ELF"
           test -n "$NM"
           test -n "$OBJDUMP"
-          "$NM" "$ELF" | grep -E ' [Tt] waze_bt_controller_mem_release
-        uses: actions/upload-artifact@v4
-        with:
-          name: WazeHUD-ArduinoIDE-firmware-v1.7.7
-          path: |
-            arduino-build/*.bin
-            arduino-build/*.elf
-
-      - name: Package Arduino-ready source
-        run: |
-          zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
-
-      - name: Upload Arduino-ready source
-        uses: actions/upload-artifact@v4
-        with:
-          name: WazeHUD-ArduinoIDE-v1.7.7
-          path: WazeHUD-ArduinoIDE-v1.7.7.zip
-
-          CALLS="$("$OBJDUMP" -d "$ELF" | grep -c '<waze_bt_controller_mem_release>')"
+          "$NM" "$ELF" | grep -E ' [Tt] waze_bt_controller_mem_release$'
+          CALLS=$("$OBJDUMP" -d "$ELF" | grep -c '<waze_bt_controller_mem_release>')
           echo "waze_bt_controller_mem_release symbol/call references: $CALLS"
           test "$CALLS" -ge 2
 
