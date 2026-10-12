@@ -21,6 +21,7 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <Update.h>
 #include <NimBLEDevice.h>
 #include <esp_bt.h>
+#include "esp32-hal-bt.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
@@ -2796,6 +2797,15 @@ void setupBLE() {
   if (studioRxQueue == nullptr) {
     Serial.println("ERROR: cannot create Studio RX queue");
   }
+
+  // Directly reference the Arduino Bluetooth HAL from application code.
+  // This forces esp32-hal-bt.c into the final image even if Arduino IDE reuses a
+  // cached NimBLE-Arduino object that was compiled without
+  // CONFIG_ENABLE_ARDUINO_DEPENDS. Its strong btInUse() is therefore present
+  // during initArduino(), before setup(), so BTDM memory is not released.
+  bool btWasStarted = btStarted();
+  Serial.print("Arduino BT HAL linked, started=");
+  Serial.println(btWasStarted ? "yes" : "no");
 
   if (!prepareBtControllerForNimBLE()) {
     Serial.println("ERROR: Bluetooth controller could not be reset to IDLE");
