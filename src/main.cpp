@@ -19,15 +19,13 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <Update.h>
-#include <NimBLEDevice.h>
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
 #include <esp_bt.h>
 #include "esp32-hal-bt.h"
 #include <freertos/FreeRTOS.h>
-
-extern "C" {
-extern volatile uint32_t wazeBtMemReleaseBlocked;
-extern volatile int32_t wazeBtMemReleaseLastMode;
-}
 #include <freertos/queue.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====
@@ -146,15 +144,15 @@ bool apMode = false;
 bool bleConnected = false;
 bool bleHlpReady = false;
 String bleRxBuffer;
-NimBLECharacteristic *bleNotifyCharacteristic = nullptr;
+BLECharacteristic *bleNotifyCharacteristic = nullptr;
 uint32_t lastBleDevNotify = 0;
 String bleLocalAddress = "";
 
 // Studio BLE characteristics are read by Web Bluetooth clients.
-NimBLECharacteristic *studioInfoCharacteristic = nullptr;
-NimBLECharacteristic *studioSettingsCharacteristic = nullptr;
-NimBLECharacteristic *studioStatusCharacteristic = nullptr;
-NimBLECharacteristic *studioHudCharacteristic = nullptr;
+BLECharacteristic *studioInfoCharacteristic = nullptr;
+BLECharacteristic *studioSettingsCharacteristic = nullptr;
+BLECharacteristic *studioStatusCharacteristic = nullptr;
+BLECharacteristic *studioHudCharacteristic = nullptr;
 
 struct StudioRxEvent {
   uint8_t type; // 1=settings, 2=wifi, 3=command
@@ -2460,11 +2458,11 @@ void publishStudioState(bool notifyStatus) {
   publishStudioHud(false);
 }
 
-class StudioWriteCallbacks : public NimBLECharacteristicCallbacks {
+class StudioWriteCallbacks : public BLECharacteristicCallbacks {
  public:
   explicit StudioWriteCallbacks(uint8_t eventType) : type(eventType) {}
 
-  void onWrite(NimBLECharacteristic *characteristic) override {
+  void onWrite(BLECharacteristic *characteristic) override {
     if (!studioRxQueue) return;
 
     auto value = characteristic->getValue();
@@ -2475,7 +2473,7 @@ class StudioWriteCallbacks : public NimBLECharacteristicCallbacks {
     ev.length = (uint16_t)value.length();
     memcpy(ev.bytes, value.data(), ev.length);
 
-    // Never parse JSON, change Wi-Fi or render LVGL on the NimBLE host task.
+    // Never parse JSON, change Wi-Fi or render LVGL on the BLE host task.
     xQueueSend(studioRxQueue, &ev, 0);
   }
 
@@ -2659,8 +2657,8 @@ void processStudioInput() {
   if (changed) publishStudioState(true);
 }
 
-class HudBleServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *server) override {
+class HudBleServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *server) override {
     bleConnected = true;
     bleHlpReady = false;
     bleRxBuffer = "";
@@ -2670,19 +2668,19 @@ class HudBleServerCallbacks : public NimBLEServerCallbacks {
     Serial.println("BLE HLP client connected");
   }
 
-  void onDisconnect(NimBLEServer *server) override {
+  void onDisconnect(BLEServer *server) override {
     bleConnected = false;
     bleHlpReady = false;
     bleRxBuffer = "";
     if (bleRxQueue != nullptr) xQueueReset(bleRxQueue);
-    wifiUiDirty = true; // Never call LVGL directly from the NimBLE host task.
-    NimBLEDevice::getAdvertising()->start();
+    wifiUiDirty = true; // Never call LVGL directly from the BLE host task.
+    BLEDevice::getAdvertising()->start();
     Serial.println("BLE HLP client disconnected; advertising restarted");
   }
 };
 
-class HudBleTxCallbacks : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic *characteristic) override {
+class HudBleTxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic *characteristic) override {
     // HLP/1 requires the GATT callback to return quickly. Copy the ATT chunk
     // into a bounded FreeRTOS queue; framing, JSON parsing and TFT rendering
     // happen later from loop().
@@ -2740,58 +2738,6 @@ void processBleInput() {
   }
 }
 
-static const char *btControllerStatusName(esp_bt_controller_status_t status) {
-  switch (status) {
-    case ESP_BT_CONTROLLER_STATUS_IDLE: return "IDLE";
-    case ESP_BT_CONTROLLER_STATUS_INITED: return "INITED";
-    case ESP_BT_CONTROLLER_STATUS_ENABLED: return "ENABLED";
-    default: return "UNKNOWN";
-  }
-}
-
-bool prepareBtControllerForNimBLE() {
-  esp_bt_controller_status_t status = esp_bt_controller_get_status();
-  Serial.print("BT controller before NimBLE: ");
-  Serial.println(btControllerStatusName(status));
-
-  // NimBLE-Arduino 1.4.3 expects the controller to be IDLE because it performs
-  // esp_bt_controller_init() itself. If another Arduino/IDF component or a
-  // previous controller lifecycle left it INITED/ENABLED, init() aborts with
-  // ESP_ERR_INVALID_STATE. This sketch does not use Bluedroid/Classic BT, so
-  // it is safe to return the controller to IDLE before starting NimBLE.
-  if (status == ESP_BT_CONTROLLER_STATUS_ENABLED) {
-    esp_err_t err = esp_bt_controller_disable();
-    Serial.print("BT controller disable: ");
-    Serial.println(esp_err_to_name(err));
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
-
-    uint32_t start = millis();
-    while (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED &&
-           millis() - start < 1000) {
-      delay(1);
-    }
-    status = esp_bt_controller_get_status();
-  }
-
-  if (status == ESP_BT_CONTROLLER_STATUS_INITED) {
-    esp_err_t err = esp_bt_controller_deinit();
-    Serial.print("BT controller deinit: ");
-    Serial.println(esp_err_to_name(err));
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) return false;
-
-    uint32_t start = millis();
-    while (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE &&
-           millis() - start < 1000) {
-      delay(1);
-    }
-    status = esp_bt_controller_get_status();
-  }
-
-  Serial.print("BT controller ready for NimBLE: ");
-  Serial.println(btControllerStatusName(status));
-  return status == ESP_BT_CONTROLLER_STATUS_IDLE;
-}
-
 void setupBLE() {
   bleRxQueue = xQueueCreate(16, sizeof(BleRxChunk));
   if (bleRxQueue == nullptr) {
@@ -2803,48 +2749,45 @@ void setupBLE() {
     Serial.println("ERROR: cannot create Studio RX queue");
   }
 
-  // Directly reference the Arduino Bluetooth HAL from application code.
-  // This forces esp32-hal-bt.c into the final image even if Arduino IDE reuses a
-  // cached NimBLE-Arduino object that was compiled without
-  // CONFIG_ENABLE_ARDUINO_DEPENDS. Its strong btInUse() is therefore present
-  // during initArduino(), before setup(), so BTDM memory is not released.
-  bool btWasStarted = btStarted();
-  Serial.print("Arduino BT HAL linked, started=");
-  Serial.println(btWasStarted ? "yes" : "no");
-  Serial.print("BT memory releases blocked before setupBLE: ");
-  Serial.print((uint32_t)wazeBtMemReleaseBlocked);
-  Serial.print(", last mode=");
-  Serial.println((int32_t)wazeBtMemReleaseLastMode);
+  // Use the BLE stack bundled with Arduino-ESP32 2.0.17.
+  // BLEDevice::init() uses the Arduino BT HAL (btStart) instead of BLE's
+  // direct esp_bt_controller_mem_release()/esp_bt_controller_init() sequence.
+  // This removes the ESP_ERR_INVALID_STATE crash seen at BLEDevice.cpp:880.
+  Serial.print("BLE stack: Arduino Bluedroid, controller before init=");
+  Serial.println((int)esp_bt_controller_get_status());
 
-  if (!prepareBtControllerForNimBLE()) {
-    Serial.println("ERROR: Bluetooth controller could not be reset to IDLE");
+  BLEDevice::init(BLE_DEVICE_NAME);
+  BLEDevice::setMTU(185);
+
+  Serial.print("BLE controller after init=");
+  Serial.println((int)esp_bt_controller_get_status());
+  if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_ENABLED) {
+    Serial.println("ERROR: Arduino BLE controller did not reach ENABLED state");
     return;
   }
 
-  NimBLEDevice::init(BLE_DEVICE_NAME);
-  NimBLEDevice::setMTU(185);
-
-  NimBLEServer *bleServer = NimBLEDevice::createServer();
+  BLEServer *bleServer = BLEDevice::createServer();
   bleServer->setCallbacks(new HudBleServerCallbacks());
 
-  NimBLEService *service = bleServer->createService(BLE_SERVICE_UUID);
+  BLEService *service = bleServer->createService(BLE_SERVICE_UUID);
 
   // Android -> HUD. HLP/1 uses acknowledged writes.
-  NimBLECharacteristic *tx = service->createCharacteristic(
+  BLECharacteristic *tx = service->createCharacteristic(
     BLE_TX_UUID,
-    NIMBLE_PROPERTY::WRITE
+    BLECharacteristic::PROPERTY_WRITE
   );
   tx->setCallbacks(new HudBleTxCallbacks());
 
-  // HUD -> Android. NimBLE automatically exposes CCCD for NOTIFY.
+  // HUD -> Android. BLE automatically exposes CCCD for NOTIFY.
   bleNotifyCharacteristic = service->createCharacteristic(
     BLE_RX_UUID,
-    NIMBLE_PROPERTY::NOTIFY
+    BLECharacteristic::PROPERTY_NOTIFY
   );
+  bleNotifyCharacteristic->addDescriptor(new BLE2902());
 
-  NimBLECharacteristic *caps = service->createCharacteristic(
+  BLECharacteristic *caps = service->createCharacteristic(
     BLE_CAPS_UUID,
-    NIMBLE_PROPERTY::READ
+    BLECharacteristic::PROPERTY_READ
   );
   const char *capsJson = "{\"v\":1,\"caps\":{\"transport\":\"ble\",\"maxFrame\":512}}\n";
   caps->setValue((uint8_t*)capsJson, strlen(capsJson));
@@ -2852,54 +2795,56 @@ void setupBLE() {
   service->start();
 
   // Separate Web Bluetooth configuration service.
-  NimBLEService *studioService = bleServer->createService(STUDIO_SERVICE_UUID);
+  BLEService *studioService = bleServer->createService(STUDIO_SERVICE_UUID);
 
   studioInfoCharacteristic = studioService->createCharacteristic(
     STUDIO_INFO_UUID,
-    NIMBLE_PROPERTY::READ
+    BLECharacteristic::PROPERTY_READ
   );
 
   studioSettingsCharacteristic = studioService->createCharacteristic(
     STUDIO_SETTINGS_UUID,
-    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::WRITE
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
   );
   studioSettingsCharacteristic->setCallbacks(new StudioWriteCallbacks(1));
 
-  NimBLECharacteristic *studioWifi = studioService->createCharacteristic(
+  BLECharacteristic *studioWifi = studioService->createCharacteristic(
     STUDIO_WIFI_UUID,
-    NIMBLE_PROPERTY::WRITE
+    BLECharacteristic::PROPERTY_WRITE
   );
   studioWifi->setCallbacks(new StudioWriteCallbacks(2));
 
-  NimBLECharacteristic *studioCommand = studioService->createCharacteristic(
+  BLECharacteristic *studioCommand = studioService->createCharacteristic(
     STUDIO_COMMAND_UUID,
-    NIMBLE_PROPERTY::WRITE
+    BLECharacteristic::PROPERTY_WRITE
   );
   studioCommand->setCallbacks(new StudioWriteCallbacks(3));
 
   studioStatusCharacteristic = studioService->createCharacteristic(
     STUDIO_STATUS_UUID,
-    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
   );
+  studioStatusCharacteristic->addDescriptor(new BLE2902());
 
   studioHudCharacteristic = studioService->createCharacteristic(
     STUDIO_HUD_UUID,
-    NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
+    BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
   );
+  studioHudCharacteristic->addDescriptor(new BLE2902());
 
   studioService->start();
 
-  bleLocalAddress = String(NimBLEDevice::getAddress().toString().c_str());
+  bleLocalAddress = String(BLEDevice::getAddress().toString().c_str());
   publishStudioState(false);
 
   // Keep the official HLP service UUID in the advertisement so WazeMod can
   // filter this device directly. Scan response carries the configured name.
-  NimBLEAdvertising *advertising = NimBLEDevice::getAdvertising();
+  BLEAdvertising *advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(BLE_SERVICE_UUID);
   advertising->setScanResponse(true);
   advertising->start();
 
-  Serial.print("NimBLE HLP/1 + Studio advertising as WazeHUD, address: ");
+  Serial.print("BLE HLP/1 + Studio advertising as WazeHUD, address: ");
   Serial.println(bleLocalAddress);
   Serial.print("Studio service: ");
   Serial.println(STUDIO_SERVICE_UUID);
@@ -3671,7 +3616,7 @@ void connectWiFi() {
   prefs.end();
 
   WiFi.persistent(false);
-  // Wi-Fi modem sleep MUST stay enabled when NimBLE is active on ESP32.
+  // Wi-Fi modem sleep MUST stay enabled when BLE is active on ESP32.
   // WIFI_PS_NONE can make coex_enable() abort inside esp_bt_controller_enable().
   WiFi.setSleep(true);
 

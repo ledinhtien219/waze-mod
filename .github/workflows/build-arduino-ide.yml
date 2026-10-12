@@ -31,7 +31,6 @@ jobs:
           arduino-cli lib install "Adafruit ILI9341"
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "lvgl@8.3.11"
-          arduino-cli lib install "NimBLE-Arduino@1.4.3"
 
       - name: Compile Arduino sketch
         run: >
@@ -52,19 +51,50 @@ jobs:
           "$NM" "$ELF" | grep -E ' [Tt] btStarted$'
           "$NM" "$ELF" | grep -E ' [Tt] btInUse$'
 
-      - name: Verify BT memory release guard
+      - name: Verify built-in BLE stack
         shell: bash
         run: |
+          ! grep -R "NimBLE" ESP32_WAZE_HUD
           ELF="$(find arduino-build -type f -name '*.elf' | head -n 1)"
           NM="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-nm' | head -n 1)"
-          OBJDUMP="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-objdump' | head -n 1)"
           test -n "$ELF"
           test -n "$NM"
-          test -n "$OBJDUMP"
-          "$NM" "$ELF" | grep -E ' [Tt] waze_bt_controller_mem_release$'
-          CALLS=$("$OBJDUMP" -d "$ELF" | grep -c '<waze_bt_controller_mem_release>')
-          echo "waze_bt_controller_mem_release symbol/call references: $CALLS"
-          test "$CALLS" -ge 2
+          "$NM" "$ELF" | grep -E ' [Tt] btStarted
+        uses: actions/upload-artifact@v4
+        with:
+          name: WazeHUD-ArduinoIDE-firmware-v1.7.7
+          path: |
+            arduino-build/*.bin
+            arduino-build/*.elf
+
+      - name: Package Arduino-ready source
+        run: |
+          zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
+
+      - name: Upload Arduino-ready source
+        uses: actions/upload-artifact@v4
+        with:
+          name: WazeHUD-ArduinoIDE-v1.7.7
+          path: WazeHUD-ArduinoIDE-v1.7.7.zip
+
+          "$NM" "$ELF" | grep -E ' [Tt] btInUse
+        uses: actions/upload-artifact@v4
+        with:
+          name: WazeHUD-ArduinoIDE-firmware-v1.7.7
+          path: |
+            arduino-build/*.bin
+            arduino-build/*.elf
+
+      - name: Package Arduino-ready source
+        run: |
+          zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
+
+      - name: Upload Arduino-ready source
+        uses: actions/upload-artifact@v4
+        with:
+          name: WazeHUD-ArduinoIDE-v1.7.7
+          path: WazeHUD-ArduinoIDE-v1.7.7.zip
+
 
       - name: Upload Arduino firmware binary
         uses: actions/upload-artifact@v4
