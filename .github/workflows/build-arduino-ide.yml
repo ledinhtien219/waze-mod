@@ -60,6 +60,7 @@ jobs:
 
       - name: Package Arduino-ready source
         run: |
+          rm -rf ESP32_WAZE_HUD/build
           zip -r WazeHUD-ArduinoIDE-v1.7.7.zip ESP32_WAZE_HUD ARDUINO_IDE.md
 
       - name: Upload Arduino-ready source
