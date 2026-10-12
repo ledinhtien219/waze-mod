@@ -18,6 +18,7 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <ArduinoJson.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
+#include <DNSServer.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
 #include <esp_heap_caps.h>
@@ -137,6 +138,7 @@ static lv_obj_t *uiOtaPercent = nullptr;
 static lv_obj_t *uiOtaBar = nullptr;
 
 WebServer server(80);
+DNSServer dnsServer;
 Preferences prefs;
 
 String wifiSSID;
@@ -3213,7 +3215,8 @@ bool installOnlineUpdate() {
     // Keep /update-status responsive during the otherwise blocking OTA stream.
     if (millis() - lastWebAt >= 120) {
       lastWebAt = millis();
-      server.handleClient();
+      if (apMode) dnsServer.processNextRequest();
+  server.handleClient();
     }
     yield();
   }
@@ -3357,6 +3360,8 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 <section id="s4"><h2>Kết nối</h2><div class="card" style="padding-bottom:16px">
 <div class="row"><div class="l"><div class="ic">📶</div><div><b>Wi-Fi</b><div class="sub"><span class="%WIFICLASS%">%WIFISTATUS%</span> · %IP%</div></div></div></div>
 <form method="post" action="/wifi"><input name="ssid" type="text" placeholder="Tên Wi-Fi (SSID)" autocapitalize="none"><input name="pass" type="password" placeholder="Mật khẩu"><button class="sec">Lưu Wi-Fi & khởi động lại</button></form>
+<div class="sub" style="margin-top:8px">AP cài đặt: <span class="mono">WAZE-HUD</span> · mật khẩu <span class="mono">12345678</span> · <span class="mono">192.168.4.1</span></div>
+<form method="post" action="/wifi-retry" style="margin-top:8px"><button type="submit">Thử lại Wi-Fi đã lưu</button></form>
 <div class="row" style="margin-top:8px"><div class="l"><div class="ic">🔵</div><div><b>BLE HLP/1</b><div class="sub">Tên: WazeHUD · <span class="mono">%BLEADDR%</span></div></div></div></div>
 <div class="st">Dữ liệu HUD: <b>%HUDSTATUS%</b></div>
 <button type="button" onclick="sendTest()">Gửi dữ liệu HUD mẫu</button><div id="testmsg" class="sub" style="margin-top:6px"></div>
@@ -3488,6 +3493,16 @@ void setupServer() {
     prefs.begin("wazehud",false); prefs.putString("ssid",s); prefs.putString("pass",p); prefs.end();
     server.send(200,"text/html; charset=utf-8","<h2>Đã lưu Wi-Fi. ESP32 đang khởi động lại...</h2>");
     delay(900); ESP.restart();
+  });
+
+  server.on("/wifi-retry", HTTP_POST, []() {
+    server.send(200,"text/html; charset=utf-8",
+                "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+                "<body style='background:#080b10;color:white;font-family:system-ui;padding:28px'>"
+                "<h2>Đang thử lại Wi-Fi đã lưu...</h2>"
+                "<p>Waze HUD sẽ khởi động lại. Nếu kết nối thất bại, AP WAZE-HUD sẽ tự mở lại.</p></body>");
+    delay(700);
+    ESP.restart();
   });
 
   server.on("/update-check", HTTP_POST, []() {
@@ -3660,8 +3675,16 @@ void startSetupAP() {
   shownIp = WiFi.softAPIP().toString();
   wifiUiDirty = true;
 
+  // Captive DNS keeps setup reachable even when the phone reports
+  // "No Internet" on the WAZE-HUD access point.
+  dnsServer.stop();
+  dnsServer.start(53, "*", WiFi.softAPIP());
+
   Serial.print("Setup AP started: ");
+  Serial.print(AP_NAME);
+  Serial.print(" @ ");
   Serial.println(shownIp);
+  Serial.println("Setup password: 12345678");
   logHeapSnapshot("AP-only");
 }
 
@@ -3670,6 +3693,7 @@ void beginStationAttempt(const char *reason) {
 
   // Free AP resources first; only then allocate station reconnect resources.
   if (apMode) {
+    dnsServer.stop();
     WiFi.softAPdisconnect(true);
     apMode = false;
     delay(80);
@@ -3808,11 +3832,11 @@ void maintainWiFi() {
     return;
   }
 
-  // Leave AP-only mode briefly every 15 seconds for one clean STA attempt.
-  if (millis() - lastWifiRetry >= 15000) {
-    lastWifiRetry = millis();
-    beginStationAttempt("retry");
-  }
+  // Once fallback AP is active, keep it stable for Settings.
+  // Do not tear it down automatically to retry STA; that used to disconnect
+  // phones in the middle of configuration. A manual retry or saving new Wi-Fi
+  // credentials restarts the ESP32 and performs a fresh station attempt.
+  return;
 }
 
 void setup() {
@@ -3877,6 +3901,10 @@ void setup() {
 
   Serial.print("Waze HUD IP: ");
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP() : WiFi.softAPIP());
+  if (apMode) {
+    Serial.println("Settings: connect Wi-Fi WAZE-HUD / password 12345678");
+    Serial.println("Open: http://192.168.4.1");
+  }
 }
 
 
