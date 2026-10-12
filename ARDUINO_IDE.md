@@ -69,3 +69,25 @@ IDE, then install exactly **NimBLE-Arduino 2.5.1** from Library Manager.
 
 The sketch now has a compile-time version gate, so it will produce one clear version
 error if the wrong NimBLE library is selected.
+
+
+## Wi-Fi internal-heap hardening
+
+The firmware now keeps setup fallback in **AP-only** mode and tears the AP down before
+each station reconnect. It no longer keeps AP+STA, NimBLE and LVGL allocated together
+during reconnect attempts.
+
+It also pre-initializes the newlib stdout/UART locks at boot. This addresses a decoded
+crash path where the ESP Wi-Fi task reached `wifi_log -> uart_write -> lock_init_generic`
+and aborted because a mutex could not be allocated from the remaining internal heap.
+
+Wi-Fi event callbacks only set flags; Serial/UI work runs from `loop()`. Automatic OTA
+and weather HTTPS calls are also gated on internal free heap and largest contiguous block.
+
+Useful diagnostics:
+
+```text
+[heap] boot: free=..., largest=...
+[heap] STA attempt: free=..., largest=...
+[heap] STA connected: free=..., largest=...
+```

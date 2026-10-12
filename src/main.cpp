@@ -20,6 +20,8 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <WiFiClientSecure.h>
 #include <Update.h>
 #include <NimBLEDevice.h>
+#include <esp_heap_caps.h>
+#include <esp_log.h>
 
 #if !__has_include(<NimBLECppVersion.h>)
 #error "WazeHUD requires NimBLE-Arduino 2.5.1. Arduino IDE is using NimBLE 1.x. Remove the old NimBLE-Arduino folder from your sketchbook libraries directory, install NimBLE-Arduino 2.5.1, restart Arduino IDE, then compile again."
@@ -440,6 +442,21 @@ String renderedClock = "";
 bool renderedBleState = false;
 bool renderedWifiState = false;
 bool ntpConfigured = false;
+
+// Wi-Fi events run on the ESP event task. Keep callbacks allocation/stdio-free;
+// loop() consumes these flags and performs all logging/UI work.
+volatile bool wifiGotIpEventPending = false;
+volatile bool wifiDisconnectedEventPending = false;
+volatile uint8_t wifiPendingDisconnectReason = 0;
+
+// Never keep fallback AP and a station reconnect active at the same time.
+bool wifiReconnectInProgress = false;
+uint32_t wifiReconnectDeadline = 0;
+
+// Delay HTTPS update checks until radio startup is stable and heap is healthy.
+bool autoUpdateCheckPending = false;
+uint32_t autoUpdateCheckEarliest = 0;
+
 bool overspeedBorderVisible = false;
 uint32_t lastOverspeedBlink = 0;
 
@@ -1918,6 +1935,12 @@ void maintainWeather() {
   if (!settings.standbyClock || !settings.sbTemp) return;
   if (!sbActive || lvUiMode != LVUI_WAITING) return;
   if (WiFi.status() != WL_CONNECTED || bleConnected || otaInProgress) return;
+
+  // Open-Meteo uses TLS. Skip this cycle if internal heap is fragmented/low.
+  size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  if (freeInternal < 90000 || largestInternal < 45000) return;
+
   uint32_t now = millis();
   uint32_t gap = (wxLastOk && wxLastOk == wxLastTry) ? 900000UL : 60000UL;
   if (wxTried && now - wxLastTry < gap) return;
@@ -3608,15 +3631,64 @@ void setupServer() {
   server.begin();
 }
 
+void logHeapSnapshot(const char *label) {
+  size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+  Serial.print("[heap] ");
+  Serial.print(label);
+  Serial.print(": free=");
+  Serial.print((uint32_t)freeInternal);
+  Serial.print(", largest=");
+  Serial.println((uint32_t)largestInternal);
+}
+
 void startSetupAP() {
-  // Switching to AP+STA keeps the station configuration loaded by the single
-  // WiFi.begin() call. Never call WiFi.begin() again while STA is connecting.
-  WiFi.mode(WIFI_AP_STA);
-  WiFi.softAP(AP_NAME, AP_PASS);
+  // Setup fallback is AP-only. Avoid AP+STA + NimBLE + LVGL at the same time.
+  WiFi.disconnect(false, false);
+  delay(40);
+  WiFi.mode(WIFI_AP);
+  delay(40);
+
+  if (!WiFi.softAP(AP_NAME, AP_PASS)) {
+    Serial.println("ERROR: setup AP could not start");
+    apMode = false;
+    return;
+  }
 
   apMode = true;
+  wifiReconnectInProgress = false;
   shownIp = WiFi.softAPIP().toString();
   wifiUiDirty = true;
+
+  Serial.print("Setup AP started: ");
+  Serial.println(shownIp);
+  logHeapSnapshot("AP-only");
+}
+
+void beginStationAttempt(const char *reason) {
+  if (!wifiSSID.length()) return;
+
+  // Free AP resources first; only then allocate station reconnect resources.
+  if (apMode) {
+    WiFi.softAPdisconnect(true);
+    apMode = false;
+    delay(80);
+  }
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, false);
+  delay(80);
+
+  Serial.print("Wi-Fi station attempt (");
+  Serial.print(reason);
+  Serial.print("): ");
+  Serial.println(wifiSSID);
+
+  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
+  wifiReconnectInProgress = true;
+  wifiReconnectDeadline = millis() + 8000;
+  wifiUiDirty = true;
+  logHeapSnapshot("STA attempt");
 }
 
 void connectWiFi() {
@@ -3626,13 +3698,13 @@ void connectWiFi() {
   prefs.end();
 
   WiFi.persistent(false);
-  // Wi-Fi modem sleep MUST stay enabled when NimBLE is active on ESP32.
-  // WIFI_PS_NONE can make coex_enable() abort inside esp_bt_controller_enable().
   WiFi.setSleep(true);
-
-  // Use one reconnect owner only. Arduino auto reconnect + our retry loop can
-  // overlap and cause "sta is connecting, cannot set config".
   WiFi.setAutoReconnect(false);
+
+  // Do not let the proprietary Wi-Fi task printf from core 0. Application
+  // state is logged safely from loop() instead.
+  esp_log_level_set("wifi", ESP_LOG_NONE);
+  esp_log_level_set("wifi_init", ESP_LOG_NONE);
 
   if (!wifiSSID.length()) {
     startSetupAP();
@@ -3640,47 +3712,53 @@ void connectWiFi() {
     return;
   }
 
-  WiFi.mode(WIFI_STA);
-
-  // Abort any stale station attempt left by a previous boot/state before
-  // applying credentials once.
-  WiFi.disconnect(false, false);
-  delay(150);
-
   Serial.println("Wi-Fi power save: MIN_MODEM / coexist-safe");
-  Serial.print("Wi-Fi: connecting to ");
-  Serial.println(wifiSSID);
+  beginStationAttempt("boot");
 
-  WiFi.begin(wifiSSID.c_str(), wifiPASS.c_str());
-
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) {
+  while (WiFi.status() != WL_CONNECTED &&
+         (int32_t)(millis() - wifiReconnectDeadline) < 0) {
     lvUiPump();
     delay(30);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    apMode = false;
+    wifiReconnectInProgress = false;
     shownIp = WiFi.localIP().toString();
     wifiUiDirty = true;
 
     Serial.print("Wi-Fi connected, IP: ");
     Serial.println(WiFi.localIP());
+    logHeapSnapshot("STA connected");
     return;
   }
 
-  // Do NOT call WiFi.begin() here. The STA config is already loaded.
-  // Add an AP for settings while preserving the saved station config.
-  startSetupAP();
-  lastWifiRetry = millis();
-
-  Serial.print("Wi-Fi timeout, fallback AP started. status=");
+  wifiReconnectInProgress = false;
+  Serial.print("Wi-Fi boot attempt timed out. status=");
   Serial.print((int)WiFi.status());
   Serial.print(", last reason=");
-  Serial.println((int)lastWifiDisconnectReason);
+  Serial.println((int)wifiPendingDisconnectReason);
+
+  startSetupAP();
+  lastWifiRetry = millis();
 }
 
 void maintainWiFi() {
+  // Consume event flags here. The ESP Wi-Fi event task does no Serial/String work.
+  if (wifiDisconnectedEventPending) {
+    uint8_t reason = wifiPendingDisconnectReason;
+    wifiDisconnectedEventPending = false;
+    lastWifiDisconnectReason = reason;
+    Serial.print("Wi-Fi disconnected, reason=");
+    Serial.println((int)reason);
+  }
+
+  if (wifiGotIpEventPending) {
+    wifiGotIpEventPending = false;
+    lastWifiDisconnectReason = 0;
+    Serial.print("Wi-Fi event GOT_IP: ");
+    Serial.println(WiFi.localIP());
+  }
+
   wl_status_t status = WiFi.status();
 
   if (status != lastWifiStatus) {
@@ -3690,16 +3768,11 @@ void maintainWiFi() {
   }
 
   if (status == WL_CONNECTED) {
+    wifiReconnectInProgress = false;
+
     if (!ntpConfigured) {
       configTime(7 * 3600, 0, "pool.ntp.org", "time.google.com");
       ntpConfigured = true;
-    }
-    if (apMode) {
-      // Keep AP alive only until the STA succeeds. This avoids routing
-      // confusion while still allowing setup during failures.
-      WiFi.softAPdisconnect(true);
-      apMode = false;
-      wifiUiDirty = true;
     }
 
     String ip = WiFi.localIP().toString();
@@ -3708,6 +3781,7 @@ void maintainWiFi() {
       wifiUiDirty = true;
       Serial.print("Wi-Fi IP: ");
       Serial.println(ip);
+      logHeapSnapshot("STA stable");
     }
     return;
   }
@@ -3717,39 +3791,49 @@ void maintainWiFi() {
     return;
   }
 
-  if (!apMode) startSetupAP();
+  // A bounded reconnect attempt runs STA-only. Never start AP during it.
+  if (wifiReconnectInProgress) {
+    if ((int32_t)(millis() - wifiReconnectDeadline) >= 0) {
+      wifiReconnectInProgress = false;
+      Serial.println("Wi-Fi reconnect timed out; returning to AP-only mode");
+      startSetupAP();
+      lastWifiRetry = millis();
+    }
+    return;
+  }
 
-  // Reconnect reuses the already-loaded STA config and does not call
-  // esp_wifi_set_config(), so it cannot trigger the previous
-  // "sta is connecting, cannot set config" loop.
+  if (!apMode) {
+    startSetupAP();
+    lastWifiRetry = millis();
+    return;
+  }
+
+  // Leave AP-only mode briefly every 15 seconds for one clean STA attempt.
   if (millis() - lastWifiRetry >= 15000) {
     lastWifiRetry = millis();
-
-    bool started = WiFi.reconnect();
-    Serial.print("Wi-Fi reconnect ");
-    Serial.print(started ? "started: " : "request failed: ");
-    Serial.print(wifiSSID);
-    Serial.print(", status=");
-    Serial.print((int)WiFi.status());
-    Serial.print(", reason=");
-    Serial.println((int)lastWifiDisconnectReason);
+    beginStationAttempt("retry");
   }
 }
 
 void setup() {
   Serial.begin(115200);
+  delay(20);
+
+  // Pre-create newlib stdout/UART locks while internal heap is still plentiful.
+  // The previous crash was a late lock_init_generic() OOM from the Wi-Fi task.
+  printf("WazeHUD stdio ready\n");
+  fflush(stdout);
 
   WiFi.onEvent([](WiFiEvent_t event, WiFiEventInfo_t info) {
     if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
-      lastWifiDisconnectReason = 0;
-      Serial.print("Wi-Fi event GOT_IP: ");
-      Serial.println(WiFi.localIP());
+      wifiGotIpEventPending = true;
     } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-      lastWifiDisconnectReason = info.wifi_sta_disconnected.reason;
-      Serial.print("Wi-Fi disconnected, reason=");
-      Serial.println((int)lastWifiDisconnectReason);
+      wifiPendingDisconnectReason = info.wifi_sta_disconnected.reason;
+      wifiDisconnectedEventPending = true;
     }
   });
+
+  logHeapSnapshot("boot");
 
   displaySPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI, TFT_CS);
   tft.begin(40000000);
@@ -3782,9 +3866,9 @@ void setup() {
   updateBootProgress(86, "STARTING WEB UI");
   setupServer();
 
-  if (settings.autoUpdateCheck && WiFi.status() == WL_CONNECTED) {
-    updateBootProgress(94, "CHECKING UPDATES");
-    checkForUpdate();
+  if (settings.autoUpdateCheck) {
+    autoUpdateCheckPending = true;
+    autoUpdateCheckEarliest = millis() + 30000;
   }
 
   updateBootProgress(100, "READY");
@@ -3856,6 +3940,29 @@ void loop() {
   }
 
   if (!otaInProgress) maintainWiFi();
+
+  if (autoUpdateCheckPending &&
+      !otaInProgress &&
+      WiFi.status() == WL_CONNECTED &&
+      !apMode &&
+      (int32_t)(millis() - autoUpdateCheckEarliest) >= 0) {
+    size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+
+    if (freeInternal >= 90000 && largestInternal >= 45000) {
+      autoUpdateCheckPending = false;
+      logHeapSnapshot("before deferred OTA check");
+      checkForUpdate();
+      logHeapSnapshot("after deferred OTA check");
+    } else {
+      autoUpdateCheckEarliest = millis() + 60000;
+      Serial.print("Auto-update deferred: free=");
+      Serial.print((uint32_t)freeInternal);
+      Serial.print(", largest=");
+      Serial.println((uint32_t)largestInternal);
+    }
+  }
+
   updateOverspeedEffect();
   updateStandbyScreen(false);
   maintainWeather();
