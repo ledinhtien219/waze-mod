@@ -1,54 +1,52 @@
 # Arduino IDE build guide
 
-This repository includes a ready-to-open Arduino sketch:
+Open:
 
 ```text
 ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino
 ```
 
-Keep the entire `ESP32_WAZE_HUD` folder together. Do not move only the `.ino` file.
+Keep the whole `ESP32_WAZE_HUD` folder together.
 
 ## Required versions
 
-- ESP32 by Espressif Systems: **2.0.17**
-- LVGL: **8.3.11**
-- ArduinoJson: **7.x**
+Install these exact versions:
+
+- **ESP32 by Espressif Systems: 3.3.11**
+- **NimBLE-Arduino by h2zero: 2.5.1**
+- **LVGL: 8.3.11**
+- **ArduinoJson: 7.x**
 - Adafruit GFX Library
 - Adafruit ILI9341
 
-**Do not install NimBLE-Arduino for this firmware.** The HUD now uses the BLE stack bundled
-with ESP32 Arduino core 2.0.17 (`BLEDevice` / Bluedroid). This avoids the
-`ESP_ERR_INVALID_STATE` crash that occurred inside NimBLE-Arduino 1.4.3 at
-`esp_bt_controller_init()` during the 34% STARTING BLUETOOTH stage.
+Remove old NimBLE-Arduino 1.x copies from your Arduino libraries folder before compiling.
+The firmware has been ported to the NimBLE 2.x callback and advertising APIs.
 
 ## Board settings
 
 ```text
 Board: ESP32 Dev Module
-Tools > Partition Scheme > Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)
+Tools > Partition Scheme > Minimal SPIFFS (1.9MB APP with OTA/128KB SPIFFS)
 ```
 
-The local `partitions.csv` provides the project OTA layout. The larger partition scheme is
-also needed so Arduino IDE's final size check accepts the firmware.
+The sketch also includes its own `partitions.csv` for the Waze HUD OTA layout.
 
-## LVGL configuration
+## Why the Bluetooth stack changed
 
-`build_opt.h` carries the LVGL compile defines for the whole Arduino build. It enables the
-Montserrat 12/14/18/24/40 fonts and canvas support required by the HUD.
+The previous combination of ESP32 core 2.0.17 + NimBLE-Arduino 1.4.3 could enter a
+permanent Bluetooth-controller-memory state where `esp_bt_controller_init()` returned
+`ESP_ERR_INVALID_STATE` at boot. NimBLE 1.x used `ESP_ERROR_CHECK` there, causing an
+abort/reboot loop at 34% STARTING BLUETOOTH.
 
-You do not need to copy `lv_conf.h` into the global Arduino libraries directory.
+This build uses ESP32 core 3.3.11 + NimBLE-Arduino 2.5.1. NimBLE 2.x returns a normal
+failure from `NimBLEDevice::init()` instead of aborting the ESP32, and the firmware
+continues booting without BLE if initialization ever fails.
 
-## Expected Bluetooth boot log
-
-A successful BLE startup now prints:
+## Expected boot log
 
 ```text
-BLE stack: Arduino Bluedroid, controller before init=0
-BLE controller after init=2
-Arduino BLE HLP/1 + Studio advertising as WazeHUD, address: ...
+NimBLE-Arduino 2.5.1
+NimBLE HLP/1 + Studio advertising as WazeHUD, address: ...
 ```
 
-Status 0 is IDLE and status 2 is ENABLED.
-
-If Arduino IDE still mentions `NimBLEDevice.cpp`, it is compiling an older copy of the
-sketch. Open the supplied `ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino` from this package.
+There must be no reference to `NimBLEDevice.cpp line 880` from NimBLE-Arduino 1.4.3.

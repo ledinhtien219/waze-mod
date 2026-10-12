@@ -22,7 +22,7 @@ jobs:
         run: |
           arduino-cli config init
           arduino-cli core update-index
-          arduino-cli core install esp32:esp32@2.0.17
+          arduino-cli core install esp32:esp32@3.3.11
 
       - name: Install libraries
         run: |
@@ -31,6 +31,7 @@ jobs:
           arduino-cli lib install "Adafruit ILI9341"
           arduino-cli lib install "ArduinoJson"
           arduino-cli lib install "lvgl@8.3.11"
+          arduino-cli lib install "NimBLE-Arduino@2.5.1"
 
       - name: Compile Arduino sketch
         run: >
@@ -41,17 +42,13 @@ jobs:
           --output-dir arduino-build
           ESP32_WAZE_HUD
 
-      - name: Verify built-in BLE stack
+      - name: Verify NimBLE 2.x source
         shell: bash
         run: |
-          ! grep -R "NimBLE" ESP32_WAZE_HUD
-          ELF="$(find arduino-build -type f -name '*.elf' | head -n 1)"
-          NM="$(find "$HOME/.arduino15/packages/esp32/tools" -type f -name 'xtensa-esp32-elf-nm' | head -n 1)"
-          test -n "$ELF"
-          test -n "$NM"
-          "$NM" "$ELF" | grep -E ' [Tt] btStarted$'
-          "$NM" "$ELF" | grep -E ' [Tt] btInUse$'
-          echo "Verified: Arduino built-in BLE/Bluedroid stack is linked."
+          grep -q "NimBLEDevice::getVersion" ESP32_WAZE_HUD/ESP32_WAZE_HUD.ino
+          grep -q "enableScanResponse" ESP32_WAZE_HUD/ESP32_WAZE_HUD.ino
+          ! grep -q "setScanResponse(true)" ESP32_WAZE_HUD/ESP32_WAZE_HUD.ino
+          ! grep -q "wazeBtMemReleaseBlocked" ESP32_WAZE_HUD/ESP32_WAZE_HUD.ino
 
       - name: Upload Arduino firmware binary
         uses: actions/upload-artifact@v4
