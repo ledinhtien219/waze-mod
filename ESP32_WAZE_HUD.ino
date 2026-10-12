@@ -23,6 +23,11 @@ LV_FONT_DECLARE(vn_arrows_22);
 #include <esp_bt.h>
 #include "esp32-hal-bt.h"
 #include <freertos/FreeRTOS.h>
+
+extern "C" {
+extern volatile uint32_t wazeBtMemReleaseBlocked;
+extern volatile int32_t wazeBtMemReleaseLastMode;
+}
 #include <freertos/queue.h>
 
 // ===== ESP32 DevKit V1 + ILI9341 320x240 =====
@@ -2806,6 +2811,10 @@ void setupBLE() {
   bool btWasStarted = btStarted();
   Serial.print("Arduino BT HAL linked, started=");
   Serial.println(btWasStarted ? "yes" : "no");
+  Serial.print("BT memory releases blocked before setupBLE: ");
+  Serial.print((uint32_t)wazeBtMemReleaseBlocked);
+  Serial.print(", last mode=");
+  Serial.println((int32_t)wazeBtMemReleaseLastMode);
 
   if (!prepareBtControllerForNimBLE()) {
     Serial.println("ERROR: Bluetooth controller could not be reset to IDLE");

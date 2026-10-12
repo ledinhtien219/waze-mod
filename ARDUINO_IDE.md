@@ -88,3 +88,21 @@ using **NimBLE-Arduino 2.x**. Install **1.4.3**.
 If only `lv_font_montserrat_14` exists but 12/18/24/40 are missing, make sure you opened
 the supplied `ESP32_WAZE_HUD\ESP32_WAZE_HUD.ino` and that `build_opt.h` is still in the
 same sketch folder.
+
+
+## BT memory release guard
+
+For Arduino-ESP32 2.0.17 the sketch's `build_opt.h` redirects
+`esp_bt_controller_mem_release()` to `bt_memory_guard.cpp`. Waze HUD always
+uses BLE, so the controller memory must remain reserved for the lifetime of the
+firmware.
+
+A correct boot prints a line similar to:
+
+```text
+BT memory releases blocked before setupBLE: 1, last mode=3
+```
+
+The count may be greater than 1. The important part is that it is non-zero
+before NimBLE initialization. This prevents the 34% / STARTING BLUETOOTH reboot
+caused by `ESP_ERR_INVALID_STATE` at `esp_bt_controller_init()`.

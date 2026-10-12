@@ -1,3 +1,4 @@
+-Desp_bt_controller_mem_release=waze_bt_controller_mem_release
 -DCONFIG_ENABLE_ARDUINO_DEPENDS=1
 -DLV_CONF_SKIP
 -DLV_COLOR_DEPTH=16
