@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "studio/firmware.json"
+      - ".github/workflows/publish-release.yml"
   workflow_dispatch:
 
 permissions:
@@ -25,21 +26,74 @@ jobs:
       - name: Install PlatformIO
         run: pip install platformio
 
-      - name: Build firmware
-        run: pio run -e esp32dev
-
-      - name: Read release version
+      - name: Verify release metadata
         id: meta
         shell: bash
         run: |
+          set -euo pipefail
           VERSION="$(python - <<'PY'
           import json
           with open("studio/firmware.json", "r", encoding="utf-8") as f:
               print(json.load(f)["version"])
           PY
           )"
+          SOURCE_VERSION="$(python - <<'PY'
+          import re
+          text = open("ESP32_WAZE_HUD.ino", "r", encoding="utf-8").read()
+          m = re.search(r'static const char \*FW_VERSION = "([^"]+)";', text)
+          if not m:
+              raise SystemExit("FW_VERSION not found")
+          print(m.group(1))
+          PY
+          )"
+
+          test "$VERSION" = "$SOURCE_VERSION" || {
+            echo "::error::studio/firmware.json version $VERSION does not match firmware FW_VERSION $SOURCE_VERSION"
+            exit 1
+          }
+
+          EXPECTED_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/v${VERSION}/firmware.bin"
+          ACTUAL_URL="$(python - <<'PY'
+          import json
+          with open("studio/firmware.json", "r", encoding="utf-8") as f:
+              print(json.load(f)["url"])
+          PY
+          )"
+          test "$ACTUAL_URL" = "$EXPECTED_URL" || {
+            echo "::error::Manifest URL must be $EXPECTED_URL"
+            exit 1
+          }
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build firmware
+        run: pio run -e esp32dev
+
+      - name: Validate OTA image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN=".pio/build/esp32dev/firmware.bin"
+          test -f "$BIN"
+
+          SIZE="$(stat -c%s "$BIN")"
+          SHA256="$(sha256sum "$BIN" | awk '{print $1}')"
+          OTA_SLOT=$((0x1E0000))
+
+          echo "firmware.bin size=$SIZE bytes"
+          echo "OTA slot size=$OTA_SLOT bytes"
+          echo "sha256=$SHA256"
+
+          if [ "$SIZE" -gt "$OTA_SLOT" ]; then
+            echo "::error::firmware.bin is too large for the 0x1E0000 OTA slot"
+            exit 1
+          fi
+
+          printf '%s  firmware.bin\n' "$SHA256" > firmware.sha256
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         env:
@@ -50,9 +104,38 @@ jobs:
         run: |
           set -euo pipefail
           BIN=".pio/build/esp32dev/firmware.bin"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG"               --title "Waze HUD $TAG"               --target "$GITHUB_SHA"               --latest
-            gh release upload "$TAG" "$BIN#firmware.bin" --clobber
+            gh release edit "$TAG" \
+              --title "Waze HUD $TAG" \
+              --target "$GITHUB_SHA" \
+              --latest
+            gh release upload "$TAG" \
+              "$BIN#firmware.bin" \
+              "firmware.sha256#firmware.sha256" \
+              --clobber
           else
-            gh release create "$TAG" "$BIN#firmware.bin"               --title "Waze HUD $TAG"               --target "$GITHUB_SHA"               --generate-notes               --latest
+            gh release create "$TAG" \
+              "$BIN#firmware.bin" \
+              "firmware.sha256#firmware.sha256" \
+              --title "Waze HUD $TAG" \
+              --target "$GITHUB_SHA" \
+              --generate-notes \
+              --latest
           fi
+
+      - name: Verify published asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          EXPECTED_SIZE: ${{ steps.image.outputs.size }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ONLINE_SIZE="$(gh release view "$TAG" --json assets --jq '.assets[] | select(.name=="firmware.bin") | .size')"
+          test -n "$ONLINE_SIZE"
+          test "$ONLINE_SIZE" = "$EXPECTED_SIZE" || {
+            echo "::error::Published firmware size $ONLINE_SIZE != built size $EXPECTED_SIZE"
+            exit 1
+          }
+          echo "OTA release verified: $TAG / firmware.bin / $ONLINE_SIZE bytes"
