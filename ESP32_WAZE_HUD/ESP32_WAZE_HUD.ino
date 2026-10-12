@@ -247,14 +247,26 @@ void loadAppSettings() {
   settings.brightness = constrain((int)prefs.getUChar("bright", 100), 20, 100);
   settings.hudStyle = constrain((int)prefs.getUChar("layout", 3), 0, 5);
   bool fullHudMigrated = prefs.getBool("full150", false);
+  bool compactHudMigrated = prefs.getBool("layout178", false);
   prefs.end();
 
-  // v1.5.0 switches existing devices to the finalized Full HUD exactly once.
+  // Keep old migration compatibility.
   if (!fullHudMigrated) {
     settings.hudStyle = 3;
     prefs.begin("wazehud", false);
     prefs.putUChar("layout", 3);
     prefs.putBool("full150", true);
+    prefs.end();
+  }
+
+  // One-time reset to the corrected non-overlapping Full HUD. This makes the
+  // fixed layout active immediately after flashing, even before Web Settings
+  // is reachable. Users can still select another layout later.
+  if (!compactHudMigrated) {
+    settings.hudStyle = 3;
+    prefs.begin("wazehud", false);
+    prefs.putUChar("layout", 3);
+    prefs.putBool("layout178", true);
     prefs.end();
   }
 }
@@ -1524,74 +1536,83 @@ void ensureHudScreen() {
   lvUiClear(LVUI_HUD);
   lv_obj_t *root = lv_scr_act();
 
+  // 320x240 safe grid:
+  // header 0..35, body 36..215, footer 216..239.
+  // Columns: maneuver 0..93, main 94..233, info 234..319.
   makeLineRect(root, 6, 35, 308, 1, lc(0x1A2838));
-  makeLineRect(root, 94, 42, 1, 174, lc(0x1A2838));
-  makeLineRect(root, 242, 42, 1, 174, lc(0x1A2838));
+  makeLineRect(root, 93, 42, 1, 174, lc(0x1A2838));
+  makeLineRect(root, 234, 42, 1, 174, lc(0x1A2838));
   makeLineRect(root, 6, 216, 308, 1, lc(0x1A2838));
-  makeLineRect(root, 246, 108, 70, 1, lc(0x1A2838));
-  makeLineRect(root, 246, 153, 70, 1, lc(0x1A2838));
+  makeLineRect(root, 238, 119, 78, 1, lc(0x1A2838));
+  makeLineRect(root, 238, 158, 78, 1, lc(0x1A2838));
 
   uiTitle = makeLabel(root, 8, 4, 258, 28, &vn_font_18, lc(0xF5F8FF));
 
   buildStatusDots(root);
 
+  // Left navigation column.
   uiManeuverCanvas = lv_canvas_create(root);
   lv_canvas_set_buffer(uiManeuverCanvas, lvMainCanvasBuf, 72, 72, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_set_pos(uiManeuverCanvas, 11, 42);
+  lv_obj_set_pos(uiManeuverCanvas, 10, 42);
 
-  uiDistance = makeLabel(root, 4, 115, 86, 24, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
-  uiEtaCaption = makeLabel(root, 8, 145, 78, 18, &lv_font_montserrat_12, lc(0x5FE9FF));
-  uiEta = makeLabel(root, 8, 164, 82, 26, &lv_font_montserrat_18, lc(0xF5F8FF));
+  uiDistance = makeLabel(root, 4, 115, 85, 24, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiEtaCaption = makeLabel(root, 8, 146, 78, 16, &lv_font_montserrat_12, lc(0x5FE9FF));
+  uiEta = makeLabel(root, 8, 165, 82, 24, &lv_font_montserrat_18, lc(0xF5F8FF));
 
-  uiSpeed = makeLabel(root, 100, 43, 76, 53, &lv_font_montserrat_40, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
-  uiSpeedUnit = makeLabel(root, 105, 99, 64, 18, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  // Main column: speed + current limit in the upper half, lanes below.
+  uiSpeed = makeLabel(root, 98, 43, 68, 50, &lv_font_montserrat_40, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiSpeedUnit = makeLabel(root, 100, 96, 64, 17, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
 
   uiLimitCircle = lv_obj_create(root);
   lv_obj_remove_style_all(uiLimitCircle);
-  lv_obj_set_pos(uiLimitCircle, 176, 47);
-  lv_obj_set_size(uiLimitCircle, 60, 60);
+  lv_obj_set_pos(uiLimitCircle, 169, 45);
+  lv_obj_set_size(uiLimitCircle, 58, 58);
   lv_obj_set_style_radius(uiLimitCircle, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(uiLimitCircle, lc(0xFFFFFF), 0);
   lv_obj_set_style_bg_opa(uiLimitCircle, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(uiLimitCircle, lc(0xFF3B30), 0);
-  lv_obj_set_style_border_width(uiLimitCircle, 6, 0);
-  uiLimitText = makeLabel(uiLimitCircle, 0, 14, 60, 32, &lv_font_montserrat_24, lc(0x101820), LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_style_border_width(uiLimitCircle, 5, 0);
+  uiLimitText = makeLabel(uiLimitCircle, 0, 13, 58, 30, &lv_font_montserrat_24, lc(0x101820), LV_TEXT_ALIGN_CENTER);
 
   uiLaneCanvas = lv_canvas_create(root);
   lv_canvas_set_buffer(uiLaneCanvas, lvLaneCanvasBuf, 140, 58, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_set_pos(uiLaneCanvas, 98, 147);
+  lv_obj_set_pos(uiLaneCanvas, 94, 143);
 
-  uiRoad = makeLabel(root, 96, 215, 145, 23, &vn_font_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
-
+  // Right info column. Each section owns a fixed vertical band.
   uiAlertCanvas = lv_canvas_create(root);
   lv_canvas_set_buffer(uiAlertCanvas, lvAlertCanvasBuf, 44, 44, LV_IMG_CF_TRUE_COLOR);
-  lv_obj_set_pos(uiAlertCanvas, 259, 40);
-  uiAlertLabel = makeLabel(root, 246, 84, 70, 17, &lv_font_montserrat_12, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
-  uiAlertDistance = makeLabel(root, 246, 99, 70, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  lv_obj_set_pos(uiAlertCanvas, 255, 39);
+  uiAlertLabel = makeLabel(root, 238, 83, 78, 16, &lv_font_montserrat_12, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiAlertDistance = makeLabel(root, 238, 100, 78, 18, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
-  uiRemainCaption = makeLabel(root, 248, 114, 64, 16, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
-  uiRemain = makeLabel(root, 246, 132, 70, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiRemainCaption = makeLabel(root, 240, 122, 74, 14, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  uiRemain = makeLabel(root, 238, 138, 78, 19, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
-  uiNextCaption = makeLabel(root, 248, 157, 64, 15, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  // NEXT uses a horizontal compact row, so its distance no longer collides
+  // with the footer clock.
+  uiNextCaption = makeLabel(root, 240, 161, 74, 14, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
   uiNextLimitCircle = lv_obj_create(root);
   lv_obj_remove_style_all(uiNextLimitCircle);
-  lv_obj_set_pos(uiNextLimitCircle, 270, 170);
-  lv_obj_set_size(uiNextLimitCircle, 42, 42);
+  lv_obj_set_pos(uiNextLimitCircle, 240, 176);
+  lv_obj_set_size(uiNextLimitCircle, 38, 38);
   lv_obj_set_style_radius(uiNextLimitCircle, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_bg_color(uiNextLimitCircle, lc(0xFFFFFF), 0);
   lv_obj_set_style_bg_opa(uiNextLimitCircle, LV_OPA_COVER, 0);
   lv_obj_set_style_border_color(uiNextLimitCircle, lc(0xFF3B30), 0);
   lv_obj_set_style_border_width(uiNextLimitCircle, 4, 0);
-  uiNextLimitText = makeLabel(uiNextLimitCircle, 0, 10, 42, 22, &lv_font_montserrat_14, lc(0x101820), LV_TEXT_ALIGN_CENTER);
-  uiNextDistance = makeLabel(root, 246, 211, 70, 18, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
+  uiNextLimitText = makeLabel(uiNextLimitCircle, 0, 9, 38, 20, &lv_font_montserrat_14, lc(0x101820), LV_TEXT_ALIGN_CENTER);
+  uiNextDistance = makeLabel(root, 280, 184, 36, 16, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
 
-  uiClock = makeLabel(root, 245, 219, 71, 20, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_RIGHT);
+  // Footer is three independent zones: then-turn / road / clock.
+  uiRoad = makeLabel(root, 94, 219, 140, 18, &vn_font_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiClock = makeLabel(root, 244, 219, 72, 18, &lv_font_montserrat_18, lc(0xF5F8FF), LV_TEXT_ALIGN_RIGHT);
 
   // Roundabout exit number sits inside the roundabout icon (circle centre 47,78).
   uiExitNum = makeLabel(root, 35, 69, 24, 18, &lv_font_montserrat_14, lc(0x38DFFF), LV_TEXT_ALIGN_CENTER);
-  // "Then" preview of the maneuver after the next one, bottom-left corner.
-  uiThenCaption = makeLabel(root, 8, 220, 40, 18, &vn_font_14, lc(0x8C9CB0));
-  uiThenArrow = makeLabel(root, 46, 216, 40, 24, &vn_arrows_22, lc(0x5FE9FF));
+
+  // Then-turn preview owns only the footer's left zone.
+  uiThenCaption = makeLabel(root, 8, 220, 37, 17, &vn_font_14, lc(0x8C9CB0));
+  uiThenArrow = makeLabel(root, 45, 217, 40, 22, &vn_arrows_22, lc(0x5FE9FF));
   lv_label_set_text(uiThenCaption, "Sau:");
   setHidden(uiExitNum, true);
   setHidden(uiThenCaption, true);
@@ -1679,7 +1700,8 @@ void drawHud() {
   setHidden(uiAlertDistance, !alertOn);
   if (alertOn) {
     String al = String(hlpAlertLabel(hud.alertCode));
-    if (al.length() > 10) al = al.substring(0, 10);
+    // Right column is deliberately compact; keep labels single-line.
+    if (al.length() > 9) al = al.substring(0, 9);
     setLabelText(uiAlertLabel, al.c_str());
     setLabelText(uiAlertDistance, formatDistance(hud.alertDistanceM).c_str());
   }
