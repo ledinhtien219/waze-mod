@@ -2751,7 +2751,7 @@ void setupBLE() {
   }
 
   Serial.print("NimBLE-Arduino ");
-  Serial.println(NimBLEDevice::getVersion().c_str());
+  Serial.println(NimBLEDevice::getVersion());
 
   if (!NimBLEDevice::init(BLE_DEVICE_NAME)) {
     Serial.println("ERROR: NimBLE init failed; continuing without BLE");
