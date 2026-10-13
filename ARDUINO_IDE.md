@@ -91,3 +91,28 @@ Useful diagnostics:
 [heap] STA attempt: free=..., largest=...
 [heap] STA connected: free=..., largest=...
 ```
+
+
+## AHT10 local sensor
+
+Firmware v1.8.0 supports the AHT10 directly over I2C without any extra Arduino library.
+
+Wiring used by this project:
+
+```text
+AHT10 VCC -> 3.3V
+AHT10 GND -> GND
+AHT10 SDA -> D32 / GPIO32
+AHT10 SCL -> D33 / GPIO33
+I2C address: 0x38
+```
+
+At boot Serial should print:
+
+```text
+AHT10 ready: SDA=D32, SCL=D33, address=0x38
+AHT10: 27.1 C, 58.0 %RH
+```
+
+AHT10 is the preferred temperature source for the standby screen and Web Settings.
+Open-Meteo is used only as a fallback if the sensor is absent or stops responding.

@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <SPI.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 #include <lvgl.h>
@@ -43,6 +44,12 @@ LV_FONT_DECLARE(vn_arrows_22);
 #define TFT_SCK  14
 #define TFT_MISO 35
 
+// ===== AHT10 local temperature/humidity sensor =====
+// User hardware is already wired to these pins.
+#define AHT_SDA   32
+#define AHT_SCL   33
+#define AHT_ADDR  0x38
+
 static const char *AP_NAME = "WAZE-HUD";
 static const char *AP_PASS = "12345678";
 static const char *BLE_DEVICE_NAME = "WazeHUD";
@@ -67,7 +74,7 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.7.9";
+static const char *FW_VERSION = "1.8.0";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -1950,6 +1957,157 @@ static int wxCode = -1;
 static uint32_t wxLastTry = 0, wxLastOk = 0;
 static bool wxTried = false, wxDirty = true;
 
+// AHT10 is the primary local temperature source. Open-Meteo remains only as
+// a fallback when no sensor is detected or readings have been stale for 15 s.
+static bool ahtPresent = false;
+static float ahtTempC = NAN;
+static float ahtHumidity = NAN;
+static uint32_t ahtLastRead = 0;
+static uint32_t ahtLastOk = 0;
+static uint32_t ahtLastProbe = 0;
+static uint32_t ahtLastLog = 0;
+static uint8_t ahtFailCount = 0;
+static const float AHT_TEMP_OFFSET_C = 0.0f;
+
+static bool ahtWrite(const uint8_t *data, size_t len) {
+  Wire.beginTransmission(AHT_ADDR);
+  Wire.write(data, len);
+  return Wire.endTransmission() == 0;
+}
+
+static int ahtStatus() {
+  int n = Wire.requestFrom((uint8_t)AHT_ADDR, (uint8_t)1);
+  if (n != 1 || !Wire.available()) return -1;
+  return Wire.read();
+}
+
+static bool ahtWaitReady(uint32_t timeoutMs) {
+  uint32_t start = millis();
+  do {
+    int st = ahtStatus();
+    if (st >= 0 && !(st & 0x80)) return true;
+    delay(5);
+  } while (millis() - start < timeoutMs);
+  return false;
+}
+
+static bool readAHT10() {
+  const uint8_t trigger[3] = {0xAC, 0x33, 0x00};
+  if (!ahtWrite(trigger, sizeof(trigger))) return false;
+  delay(75);
+  if (!ahtWaitReady(80)) return false;
+
+  uint8_t data[6] = {0};
+  int n = Wire.requestFrom((uint8_t)AHT_ADDR, (uint8_t)6);
+  if (n != 6) return false;
+  for (int i = 0; i < 6; ++i) {
+    if (!Wire.available()) return false;
+    data[i] = (uint8_t)Wire.read();
+  }
+
+  uint32_t rawH = ((uint32_t)data[1] << 12) |
+                  ((uint32_t)data[2] << 4) |
+                  ((uint32_t)data[3] >> 4);
+  uint32_t rawT = (((uint32_t)data[3] & 0x0F) << 16) |
+                  ((uint32_t)data[4] << 8) |
+                  (uint32_t)data[5];
+
+  float humidity = ((float)rawH * 100.0f) / 1048576.0f;
+  float tempC = ((float)rawT * 200.0f) / 1048576.0f - 50.0f + AHT_TEMP_OFFSET_C;
+
+  if (!isfinite(tempC) || !isfinite(humidity) ||
+      tempC < -40.0f || tempC > 85.0f ||
+      humidity < 0.0f || humidity > 100.0f) {
+    return false;
+  }
+
+  bool changed = isnan(ahtTempC) || fabsf(tempC - ahtTempC) >= 0.1f ||
+                 isnan(ahtHumidity) || fabsf(humidity - ahtHumidity) >= 0.5f;
+
+  ahtTempC = tempC;
+  ahtHumidity = humidity;
+  ahtLastOk = millis() ? millis() : 1;
+  ahtFailCount = 0;
+  ahtPresent = true;
+
+  // Feed the existing standby temperature pipeline from the local sensor.
+  wxTempC = ahtTempC;
+  wxCode = -1; // no Internet weather-condition icon for a local sensor reading.
+  if (changed) wxDirty = true;
+
+  if (!ahtLastLog || millis() - ahtLastLog >= 30000UL) {
+    ahtLastLog = millis();
+    Serial.print("AHT10: ");
+    Serial.print(ahtTempC, 1);
+    Serial.print(" C, ");
+    Serial.print(ahtHumidity, 1);
+    Serial.println(" %RH");
+  }
+
+  return true;
+}
+
+static bool initAHT10() {
+  ahtLastProbe = millis();
+
+  Wire.begin(AHT_SDA, AHT_SCL, 100000);
+  delay(25);
+
+  Wire.beginTransmission(AHT_ADDR);
+  if (Wire.endTransmission() != 0) {
+    ahtPresent = false;
+    Serial.println("AHT10 not detected at 0x38 (SDA=32 SCL=33); using online weather fallback");
+    return false;
+  }
+
+  const uint8_t reset = 0xBA;
+  ahtWrite(&reset, 1);
+  delay(25);
+  ahtWaitReady(100);
+
+  const uint8_t calibrate[3] = {0xE1, 0x08, 0x00};
+  ahtWrite(calibrate, sizeof(calibrate));
+  delay(10);
+  ahtWaitReady(100);
+
+  int st = ahtStatus();
+  if (st < 0) {
+    ahtPresent = false;
+    Serial.println("AHT10 detected but status read failed");
+    return false;
+  }
+
+  ahtPresent = true;
+  Serial.println("AHT10 ready: SDA=D32, SCL=D33, address=0x38");
+  return readAHT10();
+}
+
+static bool ahtHasFreshReading() {
+  return ahtPresent && ahtLastOk &&
+         (millis() - ahtLastOk < 15000UL) &&
+         !isnan(ahtTempC) && !isnan(ahtHumidity);
+}
+
+static void maintainAHT10() {
+  uint32_t now = millis();
+
+  if (!ahtPresent) {
+    if (!ahtLastProbe || now - ahtLastProbe >= 10000UL) initAHT10();
+    return;
+  }
+
+  if (now - ahtLastRead < 2000UL) return;
+  ahtLastRead = now;
+
+  if (readAHT10()) return;
+
+  if (++ahtFailCount >= 3) {
+    ahtPresent = false;
+    ahtFailCount = 0;
+    Serial.println("AHT10 lost; will retry I2C and temporarily allow online weather fallback");
+  }
+}
+
 static const char *wxCondText(int c) {
   if (c < 0) return "Nhiệt độ";
   if (c == 0) return "Trời đẹp";
@@ -2044,6 +2202,7 @@ static bool fetchWeatherOnce() {
 // Runs from loop() only while the standby screen is visible and the phone is not
 // connected over BLE, so the (short, blocking) HTTPS request never stalls navigation.
 void maintainWeather() {
+  if (ahtHasFreshReading()) return;
   if (!settings.standbyClock || !settings.sbTemp) return;
   if (!sbActive || lvUiMode != LVUI_WAITING) return;
   if (WiFi.status() != WL_CONNECTED || bleConnected || otaInProgress) return;
@@ -2387,7 +2546,13 @@ void updateStandbyScreen(bool force) {
         char tb[12];
         snprintf(tb, sizeof(tb), "%d\xC2\xB0", t);
         lv_label_set_text(sbTemp, tb);
-        lv_label_set_text(sbTempCap, wxCondText(wxCode));
+        if (ahtHasFreshReading()) {
+          char hb[20];
+          snprintf(hb, sizeof(hb), "%.0f%% RH", ahtHumidity);
+          lv_label_set_text(sbTempCap, hb);
+        } else {
+          lv_label_set_text(sbTempCap, wxCondText(wxCode));
+        }
         uint32_t col = t <= 18 ? 0x5FB4FF : (t >= 37 ? 0xFF6B5E : (t >= 33 ? 0xFFC94D : 0xF5F8FF));
         lv_obj_set_style_text_color(sbTemp, lc(col), 0);
       }
@@ -3553,7 +3718,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 .foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.7.9</div></div>
+<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.0</div></div>
 <div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip warn" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on" id="cIp">--</div></div>
 
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
@@ -3629,7 +3794,7 @@ async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tr
 async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");$("updatebar").style.width="0%";$("updatepct").textContent="0%";e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,700)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
 async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));$("updatebar").style.width=p+"%";$("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
 async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
-async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?("Hiện tại: "+Number(j.temp).toFixed(1)+"°C"):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
+async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?(j.temp_source==="aht10"?("AHT10: "+Number(j.temp).toFixed(1)+"°C · "+Number(j.humidity||0).toFixed(0)+"% RH"):("Ngoài trời: "+Number(j.temp).toFixed(1)+"°C")):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
 poll();setInterval(poll,2500);
 const L=[...document.querySelectorAll("nav a")],S=L.map(a=>document.querySelector(a.hash));
 addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offsetTop<=y)k=i});L.forEach((a,i)=>a.classList.toggle("act",i===k))},{passive:true});
@@ -3679,7 +3844,11 @@ void setupServer() {
     settings.sbTemp = server.hasArg("sb_temp");
     {
       uint8_t city = (uint8_t)constrain(server.arg("wx_city").toInt(), 0, WX_CITY_COUNT - 1);
-      if (city != settings.wxCity) { settings.wxCity = city; wxTempC = NAN; wxCode = -1; wxTried = false; wxDirty = true; }
+      if (city != settings.wxCity) {
+        settings.wxCity = city;
+        if (!ahtHasFreshReading()) wxTempC = NAN;
+        wxCode = -1; wxTried = false; wxDirty = true;
+      }
     }
     settings.brightness = constrain(server.arg("bright").toInt(),20,100);
     saveAppSettings();
@@ -3856,7 +4025,10 @@ void setupServer() {
     d["over"]=hud.overSpeed; d["layout"]=settings.hudStyle; d["next_speed_limit"]=hud.nextSpeedLimit;
     d["next_speed_distance_m"]=hud.nextSpeedDistanceM;
     d["standby"]=sbActive; d["city"]=WX_CITIES[settings.wxCity].name;
+    d["aht10"]=ahtPresent;
+    d["temp_source"]=ahtHasFreshReading()?"aht10":"weather";
     if (!isnan(wxTempC)) d["temp"]=wxTempC;
+    if (ahtHasFreshReading()) d["humidity"]=ahtHumidity;
     String out; serializeJson(d,out); server.send(200,"application/json",out);
   });
 
@@ -4092,6 +4264,9 @@ void setup() {
   updateBootProgress(18, "LOADING SETTINGS");
   loadAppSettings();
 
+  updateBootProgress(26, "CHECKING AHT10");
+  initAHT10();
+
   // Bring BLE up before Wi-Fi. Besides making Studio available earlier, this
   // avoids enabling the BT controller after Wi-Fi has entered a bad coexistence
   // power-save state on older ESP32 Arduino/IDF combinations.
@@ -4218,6 +4393,7 @@ void loop() {
   }
 
   updateOverspeedEffect();
+  maintainAHT10();
   updateStandbyScreen(false);
   maintainWeather();
   lvUiPump();
