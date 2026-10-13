@@ -74,7 +74,7 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.8.0";
+static const char *FW_VERSION = "1.8.1";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -138,6 +138,7 @@ static lv_obj_t *uiWifiBars[4] = {nullptr, nullptr, nullptr, nullptr};
 static lv_obj_t *uiBootStage = nullptr;
 static lv_obj_t *uiBootPercent = nullptr;
 static lv_obj_t *uiBootBar = nullptr;
+static lv_obj_t *uiBootFill = nullptr;
 static lv_obj_t *uiWaitStatus = nullptr;
 static lv_obj_t *uiWaitIp = nullptr;
 static lv_obj_t *uiOtaStage = nullptr;
@@ -413,6 +414,8 @@ void drawBootSplash();
 void updateBootProgress(uint8_t percent, const String &stage);
 void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = false);
 void logHeapSnapshot(const char *label);
+void beginWebFastMode();
+void maintainWebFastMode();
 void drawHud();
 void drawWaiting();
 void processBleInput();
@@ -481,6 +484,8 @@ uint32_t wifiReconnectDeadline = 0;
 bool autoUpdateCheckPending = false;
 uint32_t autoUpdateCheckEarliest = 0;
 uint32_t lastWebActivity = 0;
+bool webFastMode = false;
+uint32_t webFastModeUntil = 0;
 
 bool overspeedBorderVisible = false;
 uint32_t lastOverspeedBlink = 0;
@@ -1190,7 +1195,7 @@ void lvUiClear(LvUiMode mode) {
   uiClock = uiBleDot = nullptr;
   for (int i = 0; i < 4; ++i) uiWifiBars[i] = nullptr;
 
-  uiBootStage = uiBootPercent = uiBootBar = nullptr;
+  uiBootStage = uiBootPercent = uiBootBar = uiBootFill = nullptr;
   uiWaitStatus = uiWaitIp = nullptr;
   sbActive = false;
   for (int d = 0; d < 4; ++d) for (int g = 0; g < 7; ++g) sbSeg[d][g] = nullptr;
@@ -1829,18 +1834,30 @@ void buildBrandScreen(LvUiMode mode) {
 void drawBootSplash() {
   buildBrandScreen(LVUI_BOOT);
 
-  uiBootStage = makeLabel(lv_scr_act(), 0, 160, 320, 20, &lv_font_montserrat_12, lc(0x8C9CB0), LV_TEXT_ALIGN_CENTER);
-  uiBootBar = lv_bar_create(lv_scr_act());
-  lv_obj_set_pos(uiBootBar, 38, 190);
-  lv_obj_set_size(uiBootBar, 244, 12);
-  lv_obj_set_style_bg_color(uiBootBar, lc(0x172332), LV_PART_MAIN);
-  lv_obj_set_style_bg_opa(uiBootBar, LV_OPA_COVER, LV_PART_MAIN);
-  lv_obj_set_style_radius(uiBootBar, 6, LV_PART_MAIN);
-  lv_obj_set_style_bg_color(uiBootBar, lc(0x27DFFF), LV_PART_INDICATOR);
-  lv_obj_set_style_radius(uiBootBar, 6, LV_PART_INDICATOR);
-  lv_bar_set_range(uiBootBar, 0, 100);
+  uiBootStage = makeLabel(lv_scr_act(), 0, 158, 320, 20, &lv_font_montserrat_12, lc(0x9FB2C8), LV_TEXT_ALIGN_CENTER);
 
-  uiBootPercent = makeLabel(lv_scr_act(), 0, 207, 320, 22, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+  uiBootBar = lv_obj_create(lv_scr_act());
+  lv_obj_remove_style_all(uiBootBar);
+  lv_obj_set_pos(uiBootBar, 30, 187);
+  lv_obj_set_size(uiBootBar, 260, 18);
+  lv_obj_set_style_radius(uiBootBar, 9, 0);
+  lv_obj_set_style_bg_color(uiBootBar, lc(0x122033), 0);
+  lv_obj_set_style_bg_opa(uiBootBar, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(uiBootBar, 1, 0);
+  lv_obj_set_style_border_color(uiBootBar, lc(0x29415E), 0);
+  lv_obj_set_style_border_opa(uiBootBar, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(uiBootBar, LV_OBJ_FLAG_SCROLLABLE);
+
+  uiBootFill = lv_obj_create(uiBootBar);
+  lv_obj_remove_style_all(uiBootFill);
+  lv_obj_set_pos(uiBootFill, 2, 2);
+  lv_obj_set_size(uiBootFill, 8, 14);
+  lv_obj_set_style_radius(uiBootFill, 7, 0);
+  lv_obj_set_style_bg_color(uiBootFill, lc(0x27DFFF), 0);
+  lv_obj_set_style_bg_opa(uiBootFill, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(uiBootFill, LV_OBJ_FLAG_SCROLLABLE);
+
+  uiBootPercent = makeLabel(lv_scr_act(), 0, 208, 320, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
   lv_obj_t *ver = makeLabel(lv_scr_act(), 10, 224, 100, 15, &lv_font_montserrat_12, lc(0x5F7187));
   lv_label_set_text(ver, ("v" + String(FW_VERSION)).c_str());
@@ -1849,13 +1866,25 @@ void drawBootSplash() {
 }
 
 void updateBootProgress(uint8_t percent, const String &stage) {
-  if (lvUiMode != LVUI_BOOT || !uiBootBar) drawBootSplash();
+  if (lvUiMode != LVUI_BOOT || !uiBootBar || !uiBootFill) drawBootSplash();
+
   percent = constrain((int)percent, 0, 100);
-  lv_bar_set_value(uiBootBar, percent, LV_ANIM_OFF);
+  int fillWidth = (254 * percent) / 100;
+  if (percent > 0 && fillWidth < 8) fillWidth = 8;
+  if (fillWidth > 254) fillWidth = 254;
+
+  lv_obj_set_width(uiBootFill, fillWidth);
   lv_label_set_text(uiBootStage, stage.c_str());
   lv_label_set_text(uiBootPercent, (String(percent) + "%").c_str());
-  lv_obj_set_style_text_color(uiBootStage, percent >= 100 ? lc(0x39E889) : lc(0x8C9CB0), 0);
-  lv_obj_set_style_bg_color(uiBootBar, percent >= 100 ? lc(0x39E889) : lc(0x27DFFF), LV_PART_INDICATOR);
+
+  lv_color_t progressColor = percent >= 100 ? lc(0x39E889) : lc(0x27DFFF);
+  lv_obj_set_style_bg_color(uiBootFill, progressColor, 0);
+  lv_obj_set_style_text_color(uiBootStage, percent >= 100 ? lc(0x39E889) : lc(0x9FB2C8), 0);
+
+  lv_obj_invalidate(uiBootBar);
+  lv_obj_invalidate(uiBootFill);
+  lvUiPump();
+  delay(4);
   lvUiPump();
 }
 
@@ -3718,7 +3747,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 .foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.0</div></div>
+<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.1</div></div>
 <div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip warn" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on" id="cIp">--</div></div>
 
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
@@ -3795,20 +3824,43 @@ async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không t
 async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));$("updatebar").style.width=p+"%";$("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
 async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
 async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?(j.temp_source==="aht10"?("AHT10: "+Number(j.temp).toFixed(1)+"°C · "+Number(j.humidity||0).toFixed(0)+"% RH"):("Ngoài trời: "+Number(j.temp).toFixed(1)+"°C")):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
-poll();setInterval(poll,2500);
+poll();setInterval(poll,4000);
 const L=[...document.querySelectorAll("nav a")],S=L.map(a=>document.querySelector(a.hash));
 addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offsetTop<=y)k=i});L.forEach((a,i)=>a.classList.toggle("act",i===k))},{passive:true});
 </script></main></body></html>)HTML";
 
+void beginWebFastMode() {
+  lastWebActivity = millis();
+  webFastModeUntil = millis() + 15000UL;
+
+  if (WiFi.status() == WL_CONNECTED && !webFastMode) {
+    WiFi.setSleep(false);
+    webFastMode = true;
+    Serial.println("Web fast mode: Wi-Fi sleep OFF");
+  }
+}
+
+void maintainWebFastMode() {
+  if (!webFastMode) return;
+  if ((int32_t)(millis() - webFastModeUntil) < 0) return;
+
+  WiFi.setSleep(true);
+  webFastMode = false;
+  Serial.println("Web fast mode: Wi-Fi sleep ON");
+}
+
 void setupServer() {
+  server.enableDelay(false);
   server.on("/", HTTP_GET, []() {
-    lastWebActivity = millis();
-    server.sendHeader("Cache-Control", "no-store");
-    server.send_P(200, PSTR("text/html; charset=utf-8"), SETTINGS_PAGE);
+    beginWebFastMode();
+    server.sendHeader("Cache-Control", "private, max-age=120");
+    server.sendHeader("X-WazeHUD-Version", FW_VERSION);
+    server.send_P(200, PSTR("text/html; charset=utf-8"),
+                  SETTINGS_PAGE, sizeof(SETTINGS_PAGE) - 1);
   });
 
   server.on("/ping", HTTP_GET, []() {
-    lastWebActivity = millis();
+    beginWebFastMode();
     server.send(200, "text/plain", "OK");
   });
 
@@ -3823,6 +3875,7 @@ void setupServer() {
   });
 
   server.on("/settings", HTTP_POST, []() {
+    beginWebFastMode();
     settings.mirrorHud = server.hasArg("mirror");
     settings.nightMode = true;
     settings.showRoad = server.hasArg("road");
@@ -3882,10 +3935,15 @@ void setupServer() {
   });
 
   server.on("/update-check", HTTP_POST, []() {
+    beginWebFastMode();
     bool ok = checkForUpdate();
     JsonDocument d; d["ok"]=ok; d["current"]=FW_VERSION; d["latest"]=latestVersion;
     d["available"]=updateAvailable; d["message"]=updateMessage;
-    String out; serializeJson(d,out); server.send(200,"application/json",out);
+    size_t jsonLen = measureJson(d);
+    server.sendHeader("Cache-Control", "no-store");
+    server.setContentLength(jsonLen);
+    server.send(200, "application/json", "");
+    serializeJson(d, server.client());
   });
 
   server.on("/update-auto", HTTP_POST, []() {
@@ -3985,6 +4043,7 @@ void setupServer() {
   );
 
   server.on("/update-status", HTTP_GET, []() {
+    beginWebFastMode();
     JsonDocument d;
     d["status"] = otaStatus;
     d["message"] = updateMessage;
@@ -3999,7 +4058,7 @@ void setupServer() {
   });
 
   server.on("/state", HTTP_GET, []() {
-    lastWebActivity = millis();
+    beginWebFastMode();
     JsonDocument d;
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
@@ -4367,6 +4426,7 @@ void loop() {
   }
 
   if (!otaInProgress) maintainWiFi();
+  maintainWebFastMode();
 
   if (autoUpdateCheckPending &&
       !otaInProgress &&
