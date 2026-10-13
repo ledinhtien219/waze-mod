@@ -67,7 +67,7 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.7.7";
+static const char *FW_VERSION = "1.7.8";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -410,6 +410,8 @@ void drawHud();
 void drawWaiting();
 void processBleInput();
 bool checkForUpdate();
+bool suspendBleForHttps(const char *reason);
+void resumeBleAfterHttps(bool suspended);
 void processStudioInput();
 void publishStudioState(bool notifyStatus = false);
 String studioSettingsJson();
@@ -1962,6 +1964,8 @@ static const char *wxCondText(int c) {
 }
 
 static bool fetchWeatherOnce() {
+  if (bleConnected) return false;
+  bool bleSuspended = suspendBleForHttps("weather");
   const WxCity &c = WX_CITIES[constrain((int)settings.wxCity, 0, WX_CITY_COUNT - 1)];
   char url[200];
   snprintf(url, sizeof(url),
@@ -1981,6 +1985,7 @@ static bool fetchWeatherOnce() {
 
   if (!http.begin(client, url)) {
     Serial.println("Weather: http.begin failed");
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -2032,6 +2037,7 @@ static bool fetchWeatherOnce() {
   }
 
   http.end();
+  resumeBleAfterHttps(bleSuspended);
   return ok;
 }
 
@@ -2888,14 +2894,22 @@ void processBleInput() {
 }
 
 void setupBLE() {
-  bleRxQueue = xQueueCreate(16, sizeof(BleRxChunk));
   if (bleRxQueue == nullptr) {
-    Serial.println("ERROR: cannot create BLE RX queue");
+    bleRxQueue = xQueueCreate(16, sizeof(BleRxChunk));
+    if (bleRxQueue == nullptr) {
+      Serial.println("ERROR: cannot create BLE RX queue");
+    }
+  } else {
+    xQueueReset(bleRxQueue);
   }
 
-  studioRxQueue = xQueueCreate(8, sizeof(StudioRxEvent));
   if (studioRxQueue == nullptr) {
-    Serial.println("ERROR: cannot create Studio RX queue");
+    studioRxQueue = xQueueCreate(8, sizeof(StudioRxEvent));
+    if (studioRxQueue == nullptr) {
+      Serial.println("ERROR: cannot create Studio RX queue");
+    }
+  } else {
+    xQueueReset(studioRxQueue);
   }
 
   Serial.print("NimBLE-Arduino ");
@@ -2999,6 +3013,44 @@ void setupBLE() {
   Serial.println(STUDIO_SERVICE_UUID);
 }
 
+bool suspendBleForHttps(const char *reason) {
+  if (!NimBLEDevice::isInitialized()) return false;
+
+  Serial.print("HTTPS: pausing BLE for ");
+  Serial.println(reason ? reason : "network request");
+  logHeapSnapshot("before BLE pause");
+
+  NimBLEDevice::stopAdvertising();
+  delay(20);
+
+  bleConnected = false;
+  bleHlpReady = false;
+  bleNotifyCharacteristic = nullptr;
+  studioInfoCharacteristic = nullptr;
+  studioSettingsCharacteristic = nullptr;
+  studioStatusCharacteristic = nullptr;
+  studioHudCharacteristic = nullptr;
+
+  bool ok = NimBLEDevice::deinit(true);
+  delay(120);
+
+  if (!ok) {
+    Serial.println("WARN: NimBLE deinit returned false");
+  }
+
+  logHeapSnapshot("after BLE pause");
+  return true;
+}
+
+void resumeBleAfterHttps(bool suspended) {
+  if (!suspended) return;
+
+  Serial.println("HTTPS: restoring BLE");
+  delay(80);
+  setupBLE();
+  logHeapSnapshot("after BLE restore");
+}
+
 
 int compareVersions(const String &a, const String &b) {
   int ia = 0, ib = 0;
@@ -3017,7 +3069,8 @@ int compareVersions(const String &a, const String &b) {
 bool parseUpdateManifest(const String &url) {
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(15000);
+  client.setTimeout(10000);
+  client.setHandshakeTimeout(8);
 
   HTTPClient http;
   http.setUserAgent("ESP32-Waze-HUD/" + String(FW_VERSION));
@@ -3029,9 +3082,29 @@ bool parseUpdateManifest(const String &url) {
   http.addHeader("Accept-Encoding", "identity");
   http.addHeader("Cache-Control", "no-cache");
 
+  IPAddress ghPagesIp;
+  int dnsOk = WiFi.hostByName("ledinhtien219.github.io", ghPagesIp);
+  Serial.print("OTA DNS github.io: ");
+  if (dnsOk == 1) Serial.println(ghPagesIp);
+  else Serial.println("FAILED");
+
   int code = http.GET();
   Serial.print("OTA manifest HTTP: ");
-  Serial.println(code);
+  Serial.print(code);
+  if (code < 0) {
+    Serial.print(" (");
+    Serial.print(HTTPClient::errorToString(code));
+    Serial.print(")");
+    char sslErr[96] = {0};
+    int sslCode = client.lastError(sslErr, sizeof(sslErr));
+    if (sslCode != 0) {
+      Serial.print(", TLS ");
+      Serial.print(sslCode);
+      Serial.print(": ");
+      Serial.print(sslErr);
+    }
+  }
+  Serial.println();
   if (code != HTTP_CODE_OK) {
     http.end();
     return false;
@@ -3063,7 +3136,8 @@ bool parseUpdateManifest(const String &url) {
 bool parseGithubReleaseStream() {
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(20000);
+  client.setTimeout(12000);
+  client.setHandshakeTimeout(8);
 
   HTTPClient http;
   http.setUserAgent("ESP32-Waze-HUD/" + String(FW_VERSION));
@@ -3078,9 +3152,29 @@ bool parseGithubReleaseStream() {
   http.addHeader("X-GitHub-Api-Version", "2022-11-28");
   http.addHeader("Accept-Encoding", "identity");
 
+  IPAddress apiIp;
+  int dnsOk = WiFi.hostByName("api.github.com", apiIp);
+  Serial.print("OTA DNS api.github.com: ");
+  if (dnsOk == 1) Serial.println(apiIp);
+  else Serial.println("FAILED");
+
   int code = http.GET();
   Serial.print("OTA GitHub API HTTP: ");
-  Serial.println(code);
+  Serial.print(code);
+  if (code < 0) {
+    Serial.print(" (");
+    Serial.print(HTTPClient::errorToString(code));
+    Serial.print(")");
+    char sslErr[96] = {0};
+    int sslCode = client.lastError(sslErr, sizeof(sslErr));
+    if (sslCode != 0) {
+      Serial.print(", TLS ");
+      Serial.print(sslCode);
+      Serial.print(": ");
+      Serial.print(sslErr);
+    }
+  }
+  Serial.println();
   if (code != HTTP_CODE_OK) {
     http.end();
     return false;
@@ -3135,11 +3229,15 @@ bool checkForUpdate() {
     return false;
   }
 
+  bool bleSuspended = suspendBleForHttps("OTA check");
+
   bool ok = parseUpdateManifest(OTA_MANIFEST_URL);
   if (!ok) {
     Serial.println("OTA manifest unavailable; falling back to GitHub API stream");
     ok = parseGithubReleaseStream();
   }
+
+  resumeBleAfterHttps(bleSuspended);
 
   if (!ok) {
     updateMessage = "Không đọc được thông tin bản cập nhật";
@@ -3197,6 +3295,8 @@ bool installOnlineUpdate() {
   updateMessage = "Đang tải firmware v" + latestVersion;
   drawOtaProgressScreen(0, "PREPARING UPDATE", true);
 
+  bool bleSuspended = suspendBleForHttps("OTA firmware download");
+
   Serial.print("OTA free sketch space: ");
   Serial.println((unsigned long)freeSketch);
   Serial.print("OTA URL: ");
@@ -3205,6 +3305,7 @@ bool installOnlineUpdate() {
   WiFiClientSecure client;
   client.setInsecure();
   client.setTimeout(30000);
+  client.setHandshakeTimeout(12);
 
   HTTPClient http;
   http.setUserAgent("ESP32-Waze-HUD/" + String(FW_VERSION));
@@ -3216,6 +3317,7 @@ bool installOnlineUpdate() {
     updateMessage = "OTA lỗi: không mở được firmware URL";
     otaStatus = "failed";
     Serial.println("OTA download: http.begin failed");
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3223,12 +3325,27 @@ bool installOnlineUpdate() {
 
   int code = http.GET();
   Serial.print("OTA download HTTP: ");
-  Serial.println(code);
+  Serial.print(code);
+  if (code < 0) {
+    Serial.print(" (");
+    Serial.print(HTTPClient::errorToString(code));
+    Serial.print(")");
+    char sslErr[96] = {0};
+    int sslCode = client.lastError(sslErr, sizeof(sslErr));
+    if (sslCode != 0) {
+      Serial.print(", TLS ");
+      Serial.print(sslCode);
+      Serial.print(": ");
+      Serial.print(sslErr);
+    }
+  }
+  Serial.println();
 
   if (code != HTTP_CODE_OK) {
     updateMessage = "OTA tải lỗi HTTP " + String(code);
     otaStatus = "failed";
     http.end();
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3243,6 +3360,7 @@ bool installOnlineUpdate() {
     updateMessage = "Firmware vượt quá OTA partition";
     otaStatus = "failed";
     http.end();
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3255,6 +3373,7 @@ bool installOnlineUpdate() {
     Serial.println(errCode);
     Update.printError(Serial);
     http.end();
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3355,6 +3474,7 @@ bool installOnlineUpdate() {
                     String((unsigned long)written) + "/" +
                     String((unsigned long)expected) + " bytes)";
     Serial.println(updateMessage);
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3373,6 +3493,7 @@ bool installOnlineUpdate() {
     Serial.print("OTA verify failed, error=");
     Serial.println(errCode);
     Update.printError(Serial);
+    resumeBleAfterHttps(bleSuspended);
     return false;
   }
 
@@ -3432,7 +3553,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 .foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.7.7</div></div>
+<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.7.8</div></div>
 <div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip warn" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on" id="cIp">--</div></div>
 
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
@@ -4076,6 +4197,7 @@ void loop() {
       !otaInProgress &&
       WiFi.status() == WL_CONNECTED &&
       !apMode &&
+      !bleConnected &&
       (!lastWebActivity || millis() - lastWebActivity >= 15000UL) &&
       (int32_t)(millis() - autoUpdateCheckEarliest) >= 0) {
     size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
