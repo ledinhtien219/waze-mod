@@ -139,3 +139,15 @@ independently of LVGL theme defaults.
 - Online OTA requests return immediately; version checking and download run from
   `loop()` while the browser polls visible progress.
 - Manual `.bin` uploads use browser XHR upload progress.
+
+
+## v1.8.3 web/progress fixes
+
+- Web Settings pauses BLE advertising while the browser is active, disables Wi-Fi
+  modem sleep, and restores BLE advertising automatically after 10 seconds idle.
+- Settings HTML uses a firmware-version ETag and browser cache; repeat opens can
+  return HTTP 304 instead of retransmitting the full page.
+- Boot and OTA progress bars are rendered directly by ILI9341 only, with no LVGL
+  bar object covering the same pixels.
+- OTA progress is 2% checking, 5% download start, 5-95% from actual bytes,
+  98% verification, and 100% only after successful firmware verification.

@@ -74,7 +74,7 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.8.2";
+static const char *FW_VERSION = "1.8.3";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -412,18 +412,52 @@ String currentClockText();
 void drawBrandMark(int cx, int cy, int r);
 void drawBootSplash();
 void updateBootProgress(uint8_t percent, const String &stage);
-void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = false);
-void logHeapSnapshot(const char *label);
-void beginWebFastMode();
-void maintainWebFastMode();
-void drawHud();
-void drawWaiting();
-void processBleInput();
-bool checkForUpdate();
-bool suspendBleForHttps(const char *reason);
-void resumeBleAfterHttps(bool suspended);
-void processStudioInput();
-void publishStudioState(bool notifyStatus = false);
+void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
+  percent = constrain((int)percent, 0, 100);
+  if (!reset && otaRenderedPercent == (int)percent && otaRenderedStage == stage) return;
+
+  if (reset || lvUiMode != LVUI_OTA) {
+    lvUiClear(LVUI_OTA);
+
+    lv_obj_t *logo = lv_obj_create(lv_scr_act());
+    lv_obj_remove_style_all(logo);
+    lv_obj_set_pos(logo, 16, 20);
+    lv_obj_set_size(logo, 72, 72);
+    lv_obj_set_style_radius(logo, 16, 0);
+    lv_obj_set_style_bg_color(logo, lc(0x0B1622), 0);
+    lv_obj_set_style_bg_opa(logo, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(logo, lc(0x14D9FF), 0);
+    lv_obj_set_style_border_width(logo, 2, 0);
+    lv_obj_t *logoMark = makeLabel(logo, 0, 12, 72, 48, &lv_font_montserrat_40, lc(0x29D9FF), LV_TEXT_ALIGN_CENTER);
+    lv_label_set_text(logoMark, "W");
+
+    lv_obj_t *title = makeLabel(lv_scr_act(), 96, 25, 210, 28, &lv_font_montserrat_18, lc(0xF5F8FF));
+    lv_label_set_text(title, "SYSTEM UPDATE");
+
+    lv_obj_t *ver = makeLabel(lv_scr_act(), 96, 58, 210, 20, &lv_font_montserrat_12, lc(0x7B8DA3));
+    lv_label_set_text(ver, ("v" + String(FW_VERSION) + "  >  v" + latestVersion).c_str());
+
+    uiOtaStage = makeLabel(lv_scr_act(), 0, 101, 320, 22, &lv_font_montserrat_14, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
+    uiOtaPercent = makeLabel(lv_scr_act(), 0, 164, 320, 34, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
+
+    lv_obj_t *warn = makeLabel(lv_scr_act(), 0, 214, 320, 18, &lv_font_montserrat_12, lc(0xFFD54A), LV_TEXT_ALIGN_CENTER);
+    lv_label_set_text(warn, "DO NOT POWER OFF");
+  }
+
+  lv_label_set_text(uiOtaStage, stage.c_str());
+  lv_label_set_text(uiOtaPercent, (String(percent) + "%").c_str());
+  lv_obj_set_style_text_color(uiOtaStage, percent >= 100 ? lc(0x39E889) : lc(0x27DFFF), 0);
+  lv_obj_set_style_text_color(uiOtaPercent, percent >= 100 ? lc(0x39E889) : lc(0xF5F8FF), 0);
+
+  otaRenderedPercent = percent;
+  otaRenderedStage = stage;
+
+  lvUiRefreshNow();
+  drawTftProgressBar(28, 137, 264, 18, percent, percent >= 100);
+  yield();
+}
+
+
 String studioSettingsJson();
 String studioInfoJson();
 String studioStatusJson();
@@ -486,6 +520,7 @@ uint32_t autoUpdateCheckEarliest = 0;
 uint32_t lastWebActivity = 0;
 bool webFastMode = false;
 uint32_t webFastModeUntil = 0;
+bool webBleAdvertisingPaused = false;
 
 bool overspeedBorderVisible = false;
 uint32_t lastOverspeedBlink = 0;
@@ -1182,17 +1217,16 @@ void lvUiRefreshNow() {
 
 void drawTftProgressBar(int x, int y, int w, int h, uint8_t percent, bool done) {
   percent = constrain((int)percent, 0, 100);
-  int radius = h / 2;
   int innerW = w - 4;
   int fillW = (innerW * percent) / 100;
-  if (percent > 0 && fillW < 6) fillW = 6;
+  if (percent > 0 && fillW < 4) fillW = 4;
+  if (fillW > innerW) fillW = innerW;
 
-  // Redraw the whole track every time so decreasing/resetting progress is clean.
-  tft.fillRoundRect(x, y, w, h, radius, C_DARK);
-  tft.drawRoundRect(x, y, w, h, radius, C_LINE_DIM);
+  tft.fillRect(x, y, w, h, C_DARK);
+  tft.drawRect(x, y, w, h, C_LINE_DIM);
+  tft.drawRect(x + 1, y + 1, w - 2, h - 2, C_PANEL);
   if (fillW > 0) {
-    tft.fillRoundRect(x + 2, y + 2, fillW, h - 4, (h - 4) / 2,
-                      done ? C_GREEN : C_CYAN);
+    tft.fillRect(x + 2, y + 2, fillW, h - 4, done ? C_GREEN : C_CYAN);
   }
 }
 
@@ -1858,57 +1892,27 @@ void drawBootSplash() {
   buildBrandScreen(LVUI_BOOT);
 
   uiBootStage = makeLabel(lv_scr_act(), 0, 158, 320, 20, &lv_font_montserrat_12, lc(0x9FB2C8), LV_TEXT_ALIGN_CENTER);
-
-  uiBootBar = lv_obj_create(lv_scr_act());
-  lv_obj_remove_style_all(uiBootBar);
-  lv_obj_set_pos(uiBootBar, 30, 187);
-  lv_obj_set_size(uiBootBar, 260, 18);
-  lv_obj_set_style_radius(uiBootBar, 9, 0);
-  lv_obj_set_style_bg_color(uiBootBar, lc(0x122033), 0);
-  lv_obj_set_style_bg_opa(uiBootBar, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(uiBootBar, 1, 0);
-  lv_obj_set_style_border_color(uiBootBar, lc(0x29415E), 0);
-  lv_obj_set_style_border_opa(uiBootBar, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(uiBootBar, LV_OBJ_FLAG_SCROLLABLE);
-
-  uiBootFill = lv_obj_create(uiBootBar);
-  lv_obj_remove_style_all(uiBootFill);
-  lv_obj_set_pos(uiBootFill, 2, 2);
-  lv_obj_set_size(uiBootFill, 8, 14);
-  lv_obj_set_style_radius(uiBootFill, 7, 0);
-  lv_obj_set_style_bg_color(uiBootFill, lc(0x27DFFF), 0);
-  lv_obj_set_style_bg_opa(uiBootFill, LV_OPA_COVER, 0);
-  lv_obj_clear_flag(uiBootFill, LV_OBJ_FLAG_SCROLLABLE);
-
   uiBootPercent = makeLabel(lv_scr_act(), 0, 208, 320, 20, &lv_font_montserrat_14, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
   lv_obj_t *ver = makeLabel(lv_scr_act(), 10, 224, 100, 15, &lv_font_montserrat_12, lc(0x5F7187));
   lv_label_set_text(ver, ("v" + String(FW_VERSION)).c_str());
 
+  lvUiRefreshNow();
+  drawTftProgressBar(30, 187, 260, 18, 0, false);
   updateBootProgress(5, "POWERING UP");
 }
 
 void updateBootProgress(uint8_t percent, const String &stage) {
-  if (lvUiMode != LVUI_BOOT || !uiBootBar || !uiBootFill) drawBootSplash();
+  if (lvUiMode != LVUI_BOOT || !uiBootStage || !uiBootPercent) drawBootSplash();
 
   percent = constrain((int)percent, 0, 100);
-  int fillWidth = (254 * percent) / 100;
-  if (percent > 0 && fillWidth < 8) fillWidth = 8;
-  if (fillWidth > 254) fillWidth = 254;
-
-  lv_obj_set_width(uiBootFill, fillWidth);
   lv_label_set_text(uiBootStage, stage.c_str());
   lv_label_set_text(uiBootPercent, (String(percent) + "%").c_str());
-
-  lv_color_t progressColor = percent >= 100 ? lc(0x39E889) : lc(0x27DFFF);
-  lv_obj_set_style_bg_color(uiBootFill, progressColor, 0);
   lv_obj_set_style_text_color(uiBootStage, percent >= 100 ? lc(0x39E889) : lc(0x9FB2C8), 0);
 
-  lv_obj_invalidate(uiBootBar);
-  lv_obj_invalidate(uiBootFill);
   lvUiRefreshNow();
   drawTftProgressBar(30, 187, 260, 18, percent, percent >= 100);
-  delay(2);
+  yield();
 }
 
 // ---- LUNAR BEGIN ----
@@ -3231,6 +3235,8 @@ void setupBLE() {
     return;
   }
 
+  webBleAdvertisingPaused = false;
+
   Serial.print("NimBLE HLP/1 + Studio advertising as WazeHUD, address: ");
   Serial.println(bleLocalAddress);
   Serial.print("Studio service: ");
@@ -3245,6 +3251,7 @@ bool suspendBleForHttps(const char *reason) {
   logHeapSnapshot("before BLE pause");
 
   NimBLEDevice::stopAdvertising();
+  webBleAdvertisingPaused = false;
   delay(20);
 
   bleConnected = false;
@@ -3522,8 +3529,9 @@ bool installOnlineUpdate() {
   }
 
   otaStatus = "downloading";
+  otaPercent = 5;
   updateMessage = "Đang tải firmware v" + latestVersion;
-  drawOtaProgressScreen(0, "PREPARING UPDATE", true);
+  drawOtaProgressScreen(5, "PREPARING UPDATE", true);
 
   bool bleSuspended = suspendBleForHttps("OTA firmware download");
 
@@ -3608,8 +3616,9 @@ bool installOnlineUpdate() {
   }
 
   otaStatus = "writing";
+  otaPercent = 5;
   updateMessage = "Đang tải và cài đặt...";
-  drawOtaProgressScreen(1, "DOWNLOADING + INSTALLING");
+  drawOtaProgressScreen(5, "DOWNLOADING + INSTALLING");
 
   WiFiClient *stream = http.getStreamPtr();
   uint8_t buffer[1024];
@@ -3646,11 +3655,10 @@ bool installOnlineUpdate() {
       otaBytesWritten = written;
       lastDataAt = millis();
 
-      uint8_t pct = 1;
+      uint8_t pct = 5;
       if (expected > 0) {
-        // Reserve 100% for successful verification.
-        size_t calcPct = (written * (size_t)99) / expected;
-        if (calcPct > 99) calcPct = 99;
+        size_t calcPct = 5 + (written * (size_t)90) / expected;
+        if (calcPct > 95) calcPct = 95;
         pct = (uint8_t)calcPct;
       }
       otaPercent = pct;
@@ -3676,7 +3684,7 @@ bool installOnlineUpdate() {
     }
 
     // Keep /update-status responsive during the otherwise blocking OTA stream.
-    if (millis() - lastWebAt >= 120) {
+    if (millis() - lastWebAt >= 60) {
       lastWebAt = millis();
       if (apMode) dnsServer.processNextRequest();
   server.handleClient();
@@ -3708,8 +3716,8 @@ bool installOnlineUpdate() {
     return false;
   }
 
-  drawOtaProgressScreen(99, "VERIFYING FIRMWARE");
-  otaPercent = 99;
+  otaPercent = 98;
+  drawOtaProgressScreen(98, "VERIFYING FIRMWARE");
   updateMessage = "Đang xác minh firmware...";
 
   bool endOK = Update.end(true);
@@ -3783,7 +3791,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 .foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.2</div></div>
+<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.3</div></div>
 <div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip warn" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on" id="cIp">--</div></div>
 
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
@@ -3830,7 +3838,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 </div></section>
 
 <section id="s5"><h2>Cập nhật firmware</h2><div class="card" style="padding-bottom:16px">
-<div class="row"><div><b>Phiên bản hiện tại</b></div><b id="currentFw">v1.8.2</b></div>
+<div class="row"><div><b>Phiên bản hiện tại</b></div><b id="currentFw">v1.8.3</b></div>
 <div class="row"><div><b>Phiên bản online</b></div><b id="latest" class="ok">--</b></div>
 <div class="row"><div><b>Tự kiểm tra khi khởi động</b></div><label class="sw"><input id="autoupdate" type="checkbox"  onchange="saveAuto()"><s></s></label></div>
 <div id="updatemsg" class="st">Chưa kiểm tra</div>
@@ -3841,7 +3849,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 </div></section>
 
 <section id="s6"><h2>Thông tin thiết bị</h2><div class="card">
-<div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b id="deviceFw">v1.8.2</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
+<div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b id="deviceFw">v1.8.3</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
 </div></section>
 <div class="foot">Waze HUD Mod · ledinhtien219</div>
 <div class="toast" id="toast"></div>
@@ -3858,7 +3866,7 @@ $("manualForm").addEventListener("submit",e=>{e.preventDefault();let form=$("man
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};try{let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast("Đã gửi HUD mẫu")}catch(_){toast("Gửi thất bại")}}
 async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tra GitHub...";try{let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;$("latest").textContent=j.latest?("v"+j.latest):"--"}catch(_){e.textContent="Không kiểm tra được."}}
 async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");setUpdateProgress(0,true);e.textContent="Đang xếp hàng cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,120);else setUpdateProgress(0,false)}catch(_){e.textContent="Không gửi được lệnh cập nhật.";setUpdateProgress(0,false)}}
-async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0))),active=["queued","checking","downloading","writing"].includes(j.status);setUpdateProgress(p,active&&p<=1);e.textContent=j.message||j.status;if(j.status==="failed"){setUpdateProgress(p,false);return}if(j.status==="success"){setUpdateProgress(100,false);e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}if(j.status==="idle"&&!active){setUpdateProgress(p,false);return}setTimeout(pollUpdate,350)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,800)}}
+async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0))),active=["queued","checking","downloading","writing"].includes(j.status);setUpdateProgress(p,active&&p<5);e.textContent=j.message||j.status;if(j.status==="failed"){setUpdateProgress(p,false);return}if(j.status==="success"){setUpdateProgress(100,false);e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}if(j.status==="idle"&&!active){setUpdateProgress(p,false);return}setTimeout(pollUpdate,350)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,800)}}
 async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
 async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");if($("currentFw"))$("currentFw").textContent="v"+(j.version||"--");if($("deviceFw"))$("deviceFw").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?(j.temp_source==="aht10"?("AHT10: "+Number(j.temp).toFixed(1)+"°C · "+Number(j.humidity||0).toFixed(0)+"% RH"):("Ngoài trời: "+Number(j.temp).toFixed(1)+"°C")):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
 poll();setInterval(()=>{if(document.visibilityState==="visible")poll()},7000);
@@ -3868,12 +3876,20 @@ addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offs
 
 void beginWebFastMode() {
   lastWebActivity = millis();
-  webFastModeUntil = millis() + 15000UL;
+  webFastModeUntil = millis() + 10000UL;
 
   if (WiFi.status() == WL_CONNECTED && !webFastMode) {
     WiFi.setSleep(false);
     webFastMode = true;
     Serial.println("Web fast mode: Wi-Fi sleep OFF");
+  }
+
+  if (!bleConnected && NimBLEDevice::isInitialized() && !webBleAdvertisingPaused) {
+    NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+    if (adv != nullptr && adv->isAdvertising() && adv->stop()) {
+      webBleAdvertisingPaused = true;
+      Serial.println("Web fast mode: BLE advertising paused");
+    }
   }
 }
 
@@ -3884,25 +3900,52 @@ void maintainWebFastMode() {
   }
 
   bool recentWeb = lastWebActivity && (int32_t)(millis() - webFastModeUntil) < 0;
-  bool wantFast = !bleConnected || recentWeb;
+  if (recentWeb) {
+    if (!webFastMode) {
+      WiFi.setSleep(false);
+      webFastMode = true;
+      Serial.println("Web fast mode: Wi-Fi sleep OFF");
+    }
+    return;
+  }
 
-  if (wantFast && !webFastMode) {
-    WiFi.setSleep(false);
-    webFastMode = true;
-    Serial.println("Web fast mode: Wi-Fi sleep OFF");
-  } else if (!wantFast && webFastMode) {
+  if (webFastMode) {
     WiFi.setSleep(true);
     webFastMode = false;
     Serial.println("Web fast mode: Wi-Fi sleep ON / BLE coexist");
+  }
+
+  if (webBleAdvertisingPaused) {
+    if (NimBLEDevice::isInitialized() && !bleConnected) {
+      NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+      if (adv != nullptr && !adv->isAdvertising()) {
+        if (adv->start()) Serial.println("Web fast mode: BLE advertising restored");
+        else Serial.println("WARN: BLE advertising restore failed");
+      }
+    }
+    webBleAdvertisingPaused = false;
   }
 }
 
 void setupServer() {
   server.enableDelay(false);
+  const char *webHeaders[] = {"If-None-Match"};
+  server.collectHeaders(webHeaders, 1);
+
   server.on("/", HTTP_GET, []() {
     beginWebFastMode();
-    server.sendHeader("Cache-Control", "private, max-age=600");
+    server.client().setNoDelay(true);
+
+    String etag = String("\"") + FW_VERSION + "\"";
+    server.sendHeader("ETag", etag);
+    server.sendHeader("Cache-Control", "private, max-age=3600");
     server.sendHeader("X-WazeHUD-Version", FW_VERSION);
+
+    if (server.hasHeader("If-None-Match") && server.header("If-None-Match") == etag) {
+      server.send(304, "text/plain", "");
+      return;
+    }
+
     server.send_P(200, PSTR("text/html; charset=utf-8"),
                   SETTINGS_PAGE, sizeof(SETTINGS_PAGE) - 1);
   });
@@ -4086,6 +4129,7 @@ void setupServer() {
 
   server.on("/update-status", HTTP_GET, []() {
     beginWebFastMode();
+    server.client().setNoDelay(true);
     JsonDocument d;
     d["status"] = otaStatus;
     d["message"] = updateMessage;
@@ -4102,6 +4146,7 @@ void setupServer() {
 
   server.on("/state", HTTP_GET, []() {
     beginWebFastMode();
+    server.client().setNoDelay(true);
     JsonDocument d;
     d["version"]=FW_VERSION; d["ip"]=apMode?WiFi.softAPIP().toString():WiFi.localIP().toString();
     d["ble_name"]=BLE_DEVICE_NAME; d["ble_address"]=bleLocalAddress;
@@ -4459,11 +4504,11 @@ void loop() {
     otaInProgress = true;
 
     otaStatus = "checking";
-    otaPercent = 0;
+    otaPercent = 2;
     updateMessage = "Đang kiểm tra bản cập nhật...";
     otaRenderedPercent = -1;
     otaRenderedStage = "";
-    drawOtaProgressScreen(0, "CHECKING UPDATE", true);
+    drawOtaProgressScreen(2, "CHECKING UPDATE", true);
     bool ok = installOnlineUpdate();
     otaInProgress = false;
 

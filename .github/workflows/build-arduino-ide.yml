@@ -53,7 +53,7 @@ jobs:
       - name: Upload Arduino firmware binary
         uses: actions/upload-artifact@v4
         with:
-          name: WazeHUD-ArduinoIDE-firmware-v1.8.2
+          name: WazeHUD-ArduinoIDE-firmware-v1.8.3
           path: |
             arduino-build/*.bin
             arduino-build/*.elf
@@ -61,10 +61,10 @@ jobs:
       - name: Package Arduino-ready source
         run: |
           rm -rf ESP32_WAZE_HUD/build
-          zip -r WazeHUD-ArduinoIDE-v1.8.2.zip ESP32_WAZE_HUD ARDUINO_IDE.md
+          zip -r WazeHUD-ArduinoIDE-v1.8.3.zip ESP32_WAZE_HUD ARDUINO_IDE.md
 
       - name: Upload Arduino-ready source
         uses: actions/upload-artifact@v4
         with:
-          name: WazeHUD-ArduinoIDE-v1.8.2
-          path: WazeHUD-ArduinoIDE-v1.8.2.zip
+          name: WazeHUD-ArduinoIDE-v1.8.3
+          path: WazeHUD-ArduinoIDE-v1.8.3.zip
