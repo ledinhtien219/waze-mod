@@ -412,52 +412,18 @@ String currentClockText();
 void drawBrandMark(int cx, int cy, int r);
 void drawBootSplash();
 void updateBootProgress(uint8_t percent, const String &stage);
-void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
-  percent = constrain((int)percent, 0, 100);
-  if (!reset && otaRenderedPercent == (int)percent && otaRenderedStage == stage) return;
-
-  if (reset || lvUiMode != LVUI_OTA) {
-    lvUiClear(LVUI_OTA);
-
-    lv_obj_t *logo = lv_obj_create(lv_scr_act());
-    lv_obj_remove_style_all(logo);
-    lv_obj_set_pos(logo, 16, 20);
-    lv_obj_set_size(logo, 72, 72);
-    lv_obj_set_style_radius(logo, 16, 0);
-    lv_obj_set_style_bg_color(logo, lc(0x0B1622), 0);
-    lv_obj_set_style_bg_opa(logo, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_color(logo, lc(0x14D9FF), 0);
-    lv_obj_set_style_border_width(logo, 2, 0);
-    lv_obj_t *logoMark = makeLabel(logo, 0, 12, 72, 48, &lv_font_montserrat_40, lc(0x29D9FF), LV_TEXT_ALIGN_CENTER);
-    lv_label_set_text(logoMark, "W");
-
-    lv_obj_t *title = makeLabel(lv_scr_act(), 96, 25, 210, 28, &lv_font_montserrat_18, lc(0xF5F8FF));
-    lv_label_set_text(title, "SYSTEM UPDATE");
-
-    lv_obj_t *ver = makeLabel(lv_scr_act(), 96, 58, 210, 20, &lv_font_montserrat_12, lc(0x7B8DA3));
-    lv_label_set_text(ver, ("v" + String(FW_VERSION) + "  >  v" + latestVersion).c_str());
-
-    uiOtaStage = makeLabel(lv_scr_act(), 0, 101, 320, 22, &lv_font_montserrat_14, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
-    uiOtaPercent = makeLabel(lv_scr_act(), 0, 164, 320, 34, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
-
-    lv_obj_t *warn = makeLabel(lv_scr_act(), 0, 214, 320, 18, &lv_font_montserrat_12, lc(0xFFD54A), LV_TEXT_ALIGN_CENTER);
-    lv_label_set_text(warn, "DO NOT POWER OFF");
-  }
-
-  lv_label_set_text(uiOtaStage, stage.c_str());
-  lv_label_set_text(uiOtaPercent, (String(percent) + "%").c_str());
-  lv_obj_set_style_text_color(uiOtaStage, percent >= 100 ? lc(0x39E889) : lc(0x27DFFF), 0);
-  lv_obj_set_style_text_color(uiOtaPercent, percent >= 100 ? lc(0x39E889) : lc(0xF5F8FF), 0);
-
-  otaRenderedPercent = percent;
-  otaRenderedStage = stage;
-
-  lvUiRefreshNow();
-  drawTftProgressBar(28, 137, 264, 18, percent, percent >= 100);
-  yield();
-}
-
-
+void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset = false);
+void logHeapSnapshot(const char *label);
+void beginWebFastMode();
+void maintainWebFastMode();
+void drawHud();
+void drawWaiting();
+void processBleInput();
+bool checkForUpdate();
+bool suspendBleForHttps(const char *reason);
+void resumeBleAfterHttps(bool suspended);
+void processStudioInput();
+void publishStudioState(bool notifyStatus = false);
 String studioSettingsJson();
 String studioInfoJson();
 String studioStatusJson();
@@ -2658,6 +2624,9 @@ void drawWaiting() {
 }
 
 void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
+  percent = constrain((int)percent, 0, 100);
+  if (!reset && otaRenderedPercent == (int)percent && otaRenderedStage == stage) return;
+
   if (reset || lvUiMode != LVUI_OTA) {
     lvUiClear(LVUI_OTA);
 
@@ -2680,41 +2649,23 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
     lv_label_set_text(ver, ("v" + String(FW_VERSION) + "  >  v" + latestVersion).c_str());
 
     uiOtaStage = makeLabel(lv_scr_act(), 0, 101, 320, 22, &lv_font_montserrat_14, lc(0x27DFFF), LV_TEXT_ALIGN_CENTER);
-
-    uiOtaBar = lv_bar_create(lv_scr_act());
-    lv_obj_set_pos(uiOtaBar, 28, 137);
-    lv_obj_set_size(uiOtaBar, 264, 18);
-    lv_obj_set_style_bg_color(uiOtaBar, lc(0x172332), LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(uiOtaBar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(uiOtaBar, lc(0x27DFFF), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_opa(uiOtaBar, LV_OPA_COVER, LV_PART_INDICATOR);
-    lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_INDICATOR);
-    lv_obj_set_style_border_width(uiOtaBar, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(uiOtaBar, lc(0x29415E), LV_PART_MAIN);
-    lv_obj_set_style_border_opa(uiOtaBar, LV_OPA_COVER, LV_PART_MAIN);
-    lv_bar_set_range(uiOtaBar, 0, 100);
-
     uiOtaPercent = makeLabel(lv_scr_act(), 0, 164, 320, 34, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
 
     lv_obj_t *warn = makeLabel(lv_scr_act(), 0, 214, 320, 18, &lv_font_montserrat_12, lc(0xFFD54A), LV_TEXT_ALIGN_CENTER);
     lv_label_set_text(warn, "DO NOT POWER OFF");
   }
 
-  percent = constrain((int)percent, 0, 100);
-  lv_bar_set_value(uiOtaBar, percent, LV_ANIM_OFF);
   lv_label_set_text(uiOtaStage, stage.c_str());
   lv_label_set_text(uiOtaPercent, (String(percent) + "%").c_str());
+  lv_obj_set_style_text_color(uiOtaStage, percent >= 100 ? lc(0x39E889) : lc(0x27DFFF), 0);
+  lv_obj_set_style_text_color(uiOtaPercent, percent >= 100 ? lc(0x39E889) : lc(0xF5F8FF), 0);
 
-  if (percent >= 100) {
-    lv_obj_set_style_bg_color(uiOtaBar, lc(0x39E889), LV_PART_INDICATOR);
-    lv_obj_set_style_text_color(uiOtaStage, lc(0x39E889), 0);
-    lv_obj_set_style_text_color(uiOtaPercent, lc(0x39E889), 0);
-  }
+  otaRenderedPercent = percent;
+  otaRenderedStage = stage;
 
-  lv_obj_invalidate(uiOtaBar);
   lvUiRefreshNow();
   drawTftProgressBar(28, 137, 264, 18, percent, percent >= 100);
+  yield();
 }
 
 
