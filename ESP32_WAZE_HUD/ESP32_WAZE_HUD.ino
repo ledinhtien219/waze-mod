@@ -74,7 +74,7 @@ static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/
 SPIClass displaySPI(HSPI);
 Adafruit_ILI9341 tft(&displaySPI, TFT_DC, TFT_CS, TFT_RST);
 
-// LVGL uses a 16-line partial draw buffer: smooth UI without a full framebuffer.
+// LVGL uses an 8-line partial draw buffer to preserve internal heap for Wi-Fi/TLS.
 static lv_disp_draw_buf_t lvDrawBuf;
 static lv_color_t *lvBuf1 = nullptr;
 static lv_color_t *lvFlushBuf = nullptr;
@@ -1102,8 +1102,8 @@ void lvDisplayFlush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *colo
 }
 
 void lvUiInit() {
-  lvBuf1 = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 16);
-  lvFlushBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 16);
+  lvBuf1 = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 8);
+  lvFlushBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 320 * 8);
   lvMainCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 72 * 72);
   lvLaneCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 140 * 58);
   lvAlertCanvasBuf = (lv_color_t*)malloc(sizeof(lv_color_t) * 44 * 44);
@@ -1116,7 +1116,7 @@ void lvUiInit() {
 
   lv_init();
 
-  lv_disp_draw_buf_init(&lvDrawBuf, lvBuf1, nullptr, 320 * 16);
+  lv_disp_draw_buf_init(&lvDrawBuf, lvBuf1, nullptr, 320 * 8);
   lv_disp_drv_init(&lvDispDrv);
   lvDispDrv.hor_res = 320;
   lvDispDrv.ver_res = 240;
@@ -1932,23 +1932,54 @@ static bool fetchWeatherOnce() {
            "https://api.open-meteo.com/v1/forecast?latitude=%.2f&longitude=%.2f"
            "&current=temperature_2m,weather_code&timezone=Asia%%2FBangkok",
            c.lat, c.lon);
+
   WiFiClientSecure client;
   client.setInsecure();
-  client.setTimeout(4000);
+  client.setTimeout(6000);
+
   HTTPClient http;
-  http.setConnectTimeout(3500);
-  http.setTimeout(3500);
-  if (!http.begin(client, url)) return false;
+  http.setConnectTimeout(5000);
+  http.setTimeout(6000);
+  http.setReuse(false);
+
+  if (!http.begin(client, url)) {
+    Serial.println("Weather: http.begin failed");
+    return false;
+  }
+
+  http.addHeader("Accept-Encoding", "identity");
   int code = http.GET();
+  Serial.print("Weather HTTP: ");
+  Serial.println(code);
+
   bool ok = false;
   if (code == HTTP_CODE_OK) {
+    // Parse only the two fields we need directly from the network stream.
+    // Avoid http.getString(), which duplicates the whole response in heap.
+    JsonDocument filter;
+    filter["current"]["temperature_2m"] = true;
+    filter["current"]["weather_code"] = true;
+
     JsonDocument d;
-    if (!deserializeJson(d, http.getString()) && !d["current"]["temperature_2m"].isNull()) {
+    DeserializationError err = deserializeJson(
+      d,
+      *http.getStreamPtr(),
+      DeserializationOption::Filter(filter)
+    );
+
+    if (!err && !d["current"]["temperature_2m"].isNull()) {
       wxTempC = d["current"]["temperature_2m"].as<float>();
       wxCode = d["current"]["weather_code"] | -1;
       ok = true;
+      Serial.print("Weather temp: ");
+      Serial.print(wxTempC, 1);
+      Serial.println(" C");
+    } else {
+      Serial.print("Weather JSON error: ");
+      Serial.println(err.c_str());
     }
   }
+
   http.end();
   return ok;
 }
@@ -1960,10 +1991,12 @@ void maintainWeather() {
   if (!sbActive || lvUiMode != LVUI_WAITING) return;
   if (WiFi.status() != WL_CONNECTED || bleConnected || otaInProgress) return;
 
-  // Open-Meteo uses TLS. Skip this cycle if internal heap is fragmented/low.
+  // With the reduced LVGL buffers, ~40 KB free / ~28 KB contiguous is enough
+  // for the small filtered Open-Meteo TLS response. Defer below that instead of
+  // permanently blocking weather on real hardware.
   size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
   size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-  if (freeInternal < 90000 || largestInternal < 45000) return;
+  if (freeInternal < 40000 || largestInternal < 28000) return;
 
   uint32_t now = millis();
   uint32_t gap = (wxLastOk && wxLastOk == wxLastTry) ? 900000UL : 60000UL;
@@ -3295,174 +3328,108 @@ bool installOnlineUpdate() {
 }
 
 
-String checked(bool v) { return v ? "checked" : ""; }
 
-String pageHtml() {
-  String ip = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
-  String html = R"HTML(
-<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#06080d">
-<title>Waze HUD · Settings</title>
+static const char SETTINGS_PAGE[] PROGMEM = R"HTML(
+<!doctype html><html lang="vi"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Waze HUD Settings</title>
 <style>
-:root{color-scheme:dark;--bg:#06080d;--c1:#0d141f;--c2:#111b29;--ln:#1e2b3d;--tx:#eef4ff;--mu:#8296b0;--bl:#1597ff;--cy:#28d7ff;--gr:#22d67a;--am:#ffc94d;--rd:#ff4d5e;--g:linear-gradient(135deg,#1597ff,#28d7ff)}
-*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}html{scroll-behavior:smooth}
-body{margin:0;background:radial-gradient(900px 420px at 85% -10%,#12376099,transparent 60%),radial-gradient(700px 380px at -10% 10%,#0b2a4a88,transparent 55%),var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding-bottom:calc(150px + env(safe-area-inset-bottom))}
-main{max-width:720px;margin:auto;padding:calc(14px + env(safe-area-inset-top)) 14px 0}
-.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-.logo{display:flex;gap:11px;align-items:center}.logo i{width:42px;height:42px;border-radius:13px;background:var(--g);display:grid;place-items:center;box-shadow:0 8px 24px #1597ff55;font-style:normal;font-weight:900;color:#04121f;font-size:20px}
-.logo b{font-size:21px;letter-spacing:.5px;display:block;line-height:1.1}.logo b span{color:var(--cy)}.logo small{color:var(--mu);font-size:11.5px}
-.ver{font-size:11.5px;color:var(--cy);border:1px solid #1d4a63;background:#0a2231;padding:5px 10px;border-radius:99px;font-weight:700}
-.chips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;scrollbar-width:none}.chips::-webkit-scrollbar{display:none}
-.chip{flex:none;display:flex;align-items:center;gap:7px;padding:8px 12px;border-radius:99px;background:var(--c1);border:1px solid var(--ln);font-size:12.5px;font-weight:650;color:var(--mu)}
-.chip:before{content:"";width:8px;height:8px;border-radius:50%;background:#44546a}.chip.on{color:var(--tx)}.chip.on:before{background:var(--gr);box-shadow:0 0 10px var(--gr)}.chip.warn:before{background:var(--am);box-shadow:0 0 10px var(--am)}
-.hero{margin:14px 0;border-radius:24px;padding:16px;background:linear-gradient(160deg,#102338,#0a1119 70%);border:1px solid var(--ln);box-shadow:0 20px 50px #0008;display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:center}
-.scr{width:208px;height:156px;border-radius:12px;background:#000;border:3px solid #26354a;box-shadow:0 0 0 1px #000,0 0 30px #1597ff33;position:relative;overflow:hidden;font-weight:800}
-.scr.mir{transform:scaleX(-1)}.scr.mir *{transform:scaleX(-1)}
-.scr .sp{position:absolute;left:10px;top:8px;font-size:44px;line-height:1}.scr .sp small{display:block;font-size:9px;color:var(--mu);letter-spacing:1px;font-weight:700}
-.scr .lim{position:absolute;right:10px;top:10px;width:40px;height:40px;border-radius:50%;border:4px solid var(--rd);background:#fff;color:#000;display:grid;place-items:center;font-size:16px}
-.scr .tn{position:absolute;left:10px;bottom:34px;font-size:30px;color:var(--cy)}.scr .ds{position:absolute;left:46px;bottom:38px;font-size:16px}
-.scr .rd{position:absolute;left:10px;bottom:20px;font-size:10px;color:#cfe3ff}.scr .rt{position:absolute;left:10px;bottom:6px;font-size:9px;color:var(--mu)}.scr .et{position:absolute;right:8px;bottom:6px;font-size:10px;color:var(--gr)}
-.scr .al{position:absolute;right:8px;top:56px;font-size:9px;background:#3a1016;color:#ff8b96;padding:3px 6px;border-radius:6px}.scr .off{display:none}
-.hero h3{margin:0 0 4px;font-size:16px}.hero p{margin:0;color:var(--mu);font-size:12.5px}.hero .kv{display:flex;gap:6px;flex-wrap:wrap;margin-top:10px}.kv span{font-size:11.5px;background:#0b1623;border:1px solid var(--ln);padding:4px 9px;border-radius:8px;color:#b8c8de}
-nav{position:sticky;top:0;z-index:5;margin:0 -14px;padding:8px 14px;background:#06080dcc;backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid #121c2b;display:flex;gap:6px;overflow-x:auto;scrollbar-width:none}nav::-webkit-scrollbar{display:none}
-nav a{flex:none;padding:8px 14px;border-radius:99px;color:var(--mu);text-decoration:none;font-weight:700;font-size:13px}nav a.act{background:#12314a;color:var(--cy)}
-section{margin-top:18px;scroll-margin-top:60px}section>h2{font-size:12px;letter-spacing:1.6px;text-transform:uppercase;color:var(--mu);margin:0 4px 9px}
-.card{background:linear-gradient(180deg,var(--c2),var(--c1));border:1px solid var(--ln);border-radius:20px;padding:4px 16px;box-shadow:0 12px 30px #0006}
-.row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 0;border-bottom:1px solid #182436}.row:last-child{border:0}
-.row b{font-weight:650;display:block}.sub{color:var(--mu);font-size:12px;font-weight:400;margin-top:2px}.ic{width:34px;height:34px;border-radius:10px;background:#0d2236;display:grid;place-items:center;font-size:17px;flex:none}.l{display:flex;gap:12px;align-items:center;min-width:0}
-.sw{position:relative;width:50px;height:30px;flex:none}.sw input{position:absolute;inset:0;opacity:0;width:100%;height:100%;margin:0;z-index:2;cursor:pointer}.sw s{position:absolute;inset:0;border-radius:99px;background:#26364b;transition:.2s}.sw s:after{content:"";position:absolute;left:3px;top:3px;width:24px;height:24px;border-radius:50%;background:#fff;transition:.2s;box-shadow:0 2px 6px #0006}.sw input:checked+s{background:var(--g)}.sw input:checked+s:after{transform:translateX(20px)}
-.rg{display:flex;align-items:center;gap:10px}.rg output{min-width:40px;text-align:right;font-weight:800;color:var(--cy)}
-input[type=range]{-webkit-appearance:none;appearance:none;width:140px;height:6px;border-radius:9px;background:#26364b;outline:0}input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#fff;box-shadow:0 0 0 4px #1597ff77}input[type=range]::-moz-range-thumb{width:24px;height:24px;border:0;border-radius:50%;background:#fff}
-input[type=text],input[type=password]{width:100%;padding:14px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:15px;margin:6px 0;outline:0}input[type=text]:focus,input[type=password]:focus{border-color:var(--bl);box-shadow:0 0 0 3px #1597ff33}
-select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}.filebox{margin-top:14px;padding:14px;border:1px solid #29445f;border-radius:16px;background:linear-gradient(180deg,#0b1826,#08111b)}.filehead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.filehead b{font-size:14px}.filetag{font-size:10px;letter-spacing:1px;color:var(--cy);border:1px solid #245270;background:#0a2231;border-radius:99px;padding:4px 8px;font-weight:800}.filemeta{margin:8px 2px 0;color:#a8bad0;font-size:12px;word-break:break-all}.filemeta.ready{color:var(--gr)}.filemeta.bad{color:var(--rd)}.filebox button{margin-top:10px}
-button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px;background:var(--g);color:#031321;width:100%;margin-top:8px;cursor:pointer;transition:.15s}button:active{transform:scale(.97)}button.sec{background:#17263a;color:var(--tx);border:1px solid #27405c}button:disabled{opacity:.5}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.st{padding:12px;border-radius:13px;background:#08121d;border:1px solid #17283b;color:var(--mu);margin:10px 0;font-size:13px}.ok{color:var(--gr)}.warn{color:var(--am)}
-.pb{height:10px;background:#08121d;border:1px solid #1f3248;border-radius:99px;overflow:hidden}.pb div{height:100%;width:0;background:var(--g);transition:width .3s}.pct{text-align:right;color:var(--mu);font-size:12px;margin-top:4px}
-.mono{font:12px ui-monospace,Menlo,monospace;color:#9fb6d3;word-break:break-all}
-.bar{position:fixed;left:0;right:0;bottom:0;z-index:9;padding:12px 14px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(0deg,#06080d 55%,#06080d00);transform:translateY(120%);transition:.25s}.bar.show{transform:none}.bar div{max-width:720px;margin:auto;display:flex;gap:10px;align-items:center}.bar span{flex:1;font-size:13px;color:var(--am);font-weight:650}.bar button{width:auto;margin:0;padding:14px 26px}
-.toast{position:fixed;left:50%;top:calc(16px + env(safe-area-inset-top));transform:translate(-50%,-300%);opacity:0;background:#0f2b1e;border:1px solid #1c6b45;color:#7dffb8;padding:11px 18px;border-radius:14px;font-weight:700;z-index:20;transition:.3s;pointer-events:none}.toast.show{transform:translate(-50%,0);opacity:1}
-.foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
-@media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#070b11;color:#edf4ff;font:15px system-ui}
+main{max-width:720px;margin:auto;padding:16px}.top{display:flex;justify-content:space-between;align-items:center;gap:10px}
+h1{font-size:22px;margin:0}small,.muted{color:#8da0b8}.pill{background:#102033;border:1px solid #243851;border-radius:99px;padding:6px 10px;font-size:12px}
+.card{background:#0d1520;border:1px solid #1c2a3d;border-radius:16px;padding:14px;margin-top:12px}
+h2{font-size:14px;margin:0 0 10px;color:#4ddcff}.row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #182332}.row:last-child{border:0}
+input[type=text],input[type=password],select{width:100%;padding:11px;border:1px solid #2b3e56;border-radius:10px;background:#08101a;color:#fff}
+input[type=range]{width:160px}label{display:flex;gap:8px;align-items:center}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{width:100%;border:0;border-radius:11px;padding:12px;background:#25cfff;color:#04111c;font-weight:800;margin-top:9px}
+button.sec{background:#17263a;color:#fff;border:1px solid #29405b}.ok{color:#39e889}.warn{color:#ffc94d}
+#msg{white-space:pre-wrap;word-break:break-word}.stat{font:12px ui-monospace,monospace;color:#a9bdd6}
+@media(max-width:560px){.grid{grid-template-columns:1fr}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver">v%VERSION%</div></div>
-<div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip %WIFION%" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on">%IP%</div></div>
+<div class="top"><div><h1>Waze HUD</h1><small>Settings · <span id="ver">--</span></small></div><div class="pill" id="ip">--</div></div>
+<div class="card"><h2>Trạng thái</h2><div id="status">Đang đọc...</div><div class="stat" id="heap"></div><div class="stat" id="temp"></div></div>
 
-<div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
-<div><h3>Xem trước HUD</h3><p>Bật/tắt bên dưới để xem màn hình thay đổi ngay lập tức, rồi bấm Lưu.</p><div class="kv"><span>Uptime <b id="up">%UPTIME%</b>s</span><span>RAM <b id="heap">--</b></span></div></div></div>
+<form method="post" action="/settings" id="settingsForm">
+<div class="card"><h2>HUD</h2>
+<div class="row"><span>Layout</span><select name="layout" id="layout"><option value="0">Balanced</option><option value="1">Navigation</option><option value="2">Minimal</option><option value="3">Full HUD</option><option value="4">Sport</option><option value="5">Classic</option></select></div>
+<div class="row"><span>Độ sáng</span><label><input type="range" name="bright" id="bright" min="20" max="100"><b id="brightVal"></b></label></div>
+<div class="grid">
+<label><input type="checkbox" name="mirror" id="mirror"> Phản chiếu</label>
+<label><input type="checkbox" name="road" id="road"> Tên đường</label>
+<label><input type="checkbox" name="route" id="route"> Tên tuyến</label>
+<label><input type="checkbox" name="eta" id="eta"> ETA</label>
+<label><input type="checkbox" name="limit" id="limit"> Biển tốc độ</label>
+<label><input type="checkbox" name="lane" id="lane"> Lane guidance</label>
+<label><input type="checkbox" name="mph" id="mph"> MPH</label>
+</div></div>
 
-<nav id="nav"><a href="#s1" class="act">Hiển thị</a><a href="#s2">Cảnh báo</a><a href="#s3">Màn hình chờ</a><a href="#s4">Kết nối</a><a href="#s5">Cập nhật</a><a href="#s6">Thiết bị</a></nav>
+<div class="card"><h2>Cảnh báo</h2><div class="grid">
+<label><input type="checkbox" name="a_police" id="a_police"> Cảnh sát</label>
+<label><input type="checkbox" name="a_camera" id="a_camera"> Camera</label>
+<label><input type="checkbox" name="a_crash" id="a_crash"> Tai nạn</label>
+<label><input type="checkbox" name="a_traffic" id="a_traffic"> Ùn tắc</label>
+<label><input type="checkbox" name="a_work" id="a_work"> Công trường</label>
+<label><input type="checkbox" name="a_hazard" id="a_hazard"> Nguy hiểm</label>
+<label><input type="checkbox" name="a_signs" id="a_signs"> Biển báo</label>
+</div></div>
 
-<form method="post" action="/settings" id="f">
-<section id="s1"><h2>Hiển thị HUD</h2><div class="card">
-<div class="row"><div class="l"><div class="ic">🪞</div><div><b>Phản chiếu HUD</b><div class="sub">Dùng khi chiếu lên kính lái</div></div></div><label class="sw"><input type="checkbox" name="mirror" id="mirror" %MIRROR%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">☀️</div><div><b>Độ sáng</b><div class="sub">Mức sáng đèn nền HUD</div></div></div><div class="rg"><input type="range" name="bright" id="bright" min="20" max="100" value="%BRIGHT%"><output id="bo">%BRIGHT%%</output></div></div>
-<div class="row"><div class="l"><div class="ic">🛣️</div><div><b>Tên đường</b></div></div><label class="sw"><input type="checkbox" name="road" id="road" %ROAD%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🧭</div><div><b>Tên tuyến</b></div></div><label class="sw"><input type="checkbox" name="route" id="route" %ROUTE%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">⏱️</div><div><b>ETA</b></div></div><label class="sw"><input type="checkbox" name="eta" id="eta" %ETA%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🚦</div><div><b>Biển giới hạn tốc độ</b></div></div><label class="sw"><input type="checkbox" name="limit" id="limit" %LIMIT%><s></s></label></div>
-</div></section>
-
-<section id="s2"><h2>Cảnh báo Waze</h2><div class="card">
-<div class="row"><div class="l"><div class="ic">👮</div><div><b>Cảnh sát</b></div></div><label class="sw"><input type="checkbox" name="a_police" %APOLICE%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">📷</div><div><b>Camera tốc độ</b></div></div><label class="sw"><input type="checkbox" name="a_camera" id="a_camera" %ACAMERA%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">💥</div><div><b>Tai nạn</b></div></div><label class="sw"><input type="checkbox" name="a_crash" %ACRASH%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🚗</div><div><b>Ùn tắc</b></div></div><label class="sw"><input type="checkbox" name="a_traffic" %ATRAFFIC%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🚧</div><div><b>Công trường</b></div></div><label class="sw"><input type="checkbox" name="a_work" %AWORK%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">⚠️</div><div><b>Nguy hiểm khác</b><div class="sub">Ổ gà, vật cản, đóng đường, thời tiết, làn bị chặn…</div></div></div><label class="sw"><input type="checkbox" name="a_hazard" %AHAZARD%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🪧</div><div><b>Biển báo</b><div class="sub">Giới hạn sắp tới, cấm rẽ/quay đầu, thu phí, đèn giao thông…</div></div></div><label class="sw"><input type="checkbox" name="a_signs" %ASIGNS%><s></s></label></div>
-</div></section>
-<section id="s3"><h2>Màn hình chờ</h2><div class="card">
-<div class="row"><div class="l"><div class="ic">🕒</div><div><b>Đồng hồ khi chưa kết nối</b><div class="sub">Giờ số, ngày tháng, âm lịch, nhiệt độ. Tự bật sau 30 giây mất kết nối điện thoại</div></div></div><label class="sw"><input type="checkbox" name="sb_on" %SBON%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🌙</div><div><b>Hiện âm lịch</b><div class="sub">Ngày, tháng, năm Can Chi</div></div></div><label class="sw"><input type="checkbox" name="sb_lunar" %SBLUNAR%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">🌡️</div><div><b>Hiện nhiệt độ</b><div class="sub">Lấy qua Wi-Fi (Open-Meteo), cập nhật 15 phút/lần</div></div></div><label class="sw"><input type="checkbox" name="sb_temp" %SBTEMP%><s></s></label></div>
-<div class="row"><div class="l"><div class="ic">📍</div><div><b>Khu vực thời tiết</b><div class="sub" id="cityNow"></div></div></div><select name="wx_city" id="wx_city"><option value="0">Hà Nội</option><option value="1">TP. Hồ Chí Minh</option><option value="2">Đà Nẵng</option><option value="3">Hải Phòng</option><option value="4">Cần Thơ</option><option value="5">Huế</option><option value="6">Nha Trang</option><option value="7">Đà Lạt</option><option value="8">Vinh</option><option value="9">Ninh Bình</option><option value="10">Thanh Hóa</option><option value="11">Quy Nhơn</option></select></div>
-</div></section>
-<div class="bar" id="bar"><div><span>Có thay đổi chưa lưu</span><button type="submit">Lưu cài đặt</button></div></div>
+<div class="card"><h2>Màn hình chờ</h2><div class="grid">
+<label><input type="checkbox" name="sb_on" id="sb_on"> Đồng hồ chờ</label>
+<label><input type="checkbox" name="sb_lunar" id="sb_lunar"> Âm lịch</label>
+<label><input type="checkbox" name="sb_temp" id="sb_temp"> Nhiệt độ</label>
+</div>
+<div class="row"><span>Thành phố</span><select name="wx_city" id="wx_city">
+<option value="0">Hà Nội</option><option value="1">TP.HCM</option><option value="2">Đà Nẵng</option>
+<option value="3">Hải Phòng</option><option value="4">Cần Thơ</option><option value="5">Huế</option>
+<option value="6">Nha Trang</option><option value="7">Đà Lạt</option><option value="8">Vinh</option>
+<option value="9">Ninh Bình</option><option value="10">Thanh Hóa</option><option value="11">Quy Nhơn</option>
+</select></div></div>
+<button type="submit">Lưu Settings</button>
 </form>
 
-<section id="s4"><h2>Kết nối</h2><div class="card" style="padding-bottom:16px">
-<div class="row"><div class="l"><div class="ic">📶</div><div><b>Wi-Fi</b><div class="sub"><span class="%WIFICLASS%">%WIFISTATUS%</span> · %IP%</div></div></div></div>
-<form method="post" action="/wifi"><input name="ssid" type="text" placeholder="Tên Wi-Fi (SSID)" autocapitalize="none"><input name="pass" type="password" placeholder="Mật khẩu"><button class="sec">Lưu Wi-Fi & khởi động lại</button></form>
-<div class="sub" style="margin-top:8px">AP cài đặt: <span class="mono">WAZE-HUD</span> · mật khẩu <span class="mono">12345678</span> · <span class="mono">192.168.4.1</span></div>
-<form method="post" action="/wifi-retry" style="margin-top:8px"><button type="submit">Thử lại Wi-Fi đã lưu</button></form>
-<div class="row" style="margin-top:8px"><div class="l"><div class="ic">🔵</div><div><b>BLE HLP/1</b><div class="sub">Tên: WazeHUD · <span class="mono">%BLEADDR%</span></div></div></div></div>
-<div class="st">Dữ liệu HUD: <b>%HUDSTATUS%</b></div>
-<button type="button" onclick="sendTest()">Gửi dữ liệu HUD mẫu</button><div id="testmsg" class="sub" style="margin-top:6px"></div>
-</div></section>
+<div class="card"><h2>Wi-Fi</h2>
+<form method="post" action="/wifi"><input name="ssid" placeholder="SSID" required><input name="pass" type="password" placeholder="Mật khẩu"><button type="submit">Lưu Wi-Fi & khởi động lại</button></form>
+<form method="post" action="/wifi-retry"><button class="sec" type="submit">Thử lại Wi-Fi đã lưu</button></form>
+</div>
 
-<section id="s5"><h2>Cập nhật firmware</h2><div class="card" style="padding-bottom:16px">
-<div class="row"><div><b>Phiên bản hiện tại</b></div><b>v%VERSION%</b></div>
-<div class="row"><div><b>Phiên bản online</b></div><b id="latest" class="ok">%LATEST%</b></div>
-<div class="row"><div><b>Tự kiểm tra khi khởi động</b></div><label class="sw"><input id="autoupdate" type="checkbox" %AUTOUPDATE% onchange="saveAuto()"><s></s></label></div>
-<div id="updatemsg" class="st">%UPDATEMSG%</div>
-<div class="pb"><div id="updatebar"></div></div><div id="updatepct" class="pct">0%</div>
-<div class="grid"><button type="button" onclick="checkUpdate()">Kiểm tra cập nhật</button><button type="button" class="sec" onclick="installUpdate()">Tải về & cập nhật</button></div>
-<div class="sub" style="margin-top:8px">Tải trực tiếp từ GitHub Release. Không tắt nguồn khi đang cập nhật.</div>
-<div class="filebox"><div class="filehead"><div><b>Firmware từ máy</b><div class="sub">Chọn file <span class="mono">firmware.bin</span> đã tải về máy.</div></div><span class="filetag">LOCAL BIN</span></div><form id="manualForm" method="POST" action="/update-upload" enctype="multipart/form-data"><input id="manualFile" type="file" name="firmware" accept=".bin,application/octet-stream" required><div id="manualMeta" class="filemeta">Chưa chọn file .bin</div><button id="manualBtn" class="sec" type="submit" disabled>⬆ Cài firmware từ máy</button><div id="manualNote" class="sub" style="margin-top:8px">File sẽ được tải trực tiếp vào HUD qua Wi-Fi.</div></form></div>
-</div></section>
+<div class="card"><h2>OTA</h2><div id="ota">--</div>
+<div class="grid"><button type="button" onclick="checkUpdate()">Kiểm tra cập nhật</button><button type="button" onclick="installUpdate()">Cập nhật online</button></div>
+<form method="post" action="/update-upload" enctype="multipart/form-data"><input type="file" name="firmware" accept=".bin" required><button class="sec" type="submit">Upload firmware.bin</button></form>
+</div>
 
-<section id="s6"><h2>Thông tin thiết bị</h2><div class="card">
-<div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b>v%VERSION%</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
-</div></section>
-<div class="foot">Waze HUD Mod · ledinhtien219</div>
-<div class="toast" id="toast"></div>
-<script>
-const $=i=>document.getElementById(i),f=$("f"),bar=$("bar");
-$("wx_city").value="%WXCITY%";
-function pv(){$("scr").classList.toggle("mir",$("mirror").checked);$("pRd").classList.toggle("off",!$("road").checked);$("pRt").classList.toggle("off",!$("route").checked);$("pEt").classList.toggle("off",!$("eta").checked);$("pLim").classList.toggle("off",!$("limit").checked);$("pAl").classList.toggle("off",!$("a_camera").checked);$("scr").style.filter="brightness("+(0.35+$("bright").value/100*.65)+")";$("bo").textContent=$("bright").value+"%"}
-f.addEventListener("input",()=>{pv();bar.classList.add("show")});pv();
-function toast(t){let e=$("toast");e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),2200)}
-function updateManualFileUi(){let file=$("manualFile").files?.[0],meta=$("manualMeta"),btn=$("manualBtn");meta.className="filemeta";if(!file){meta.textContent="Chưa chọn file .bin";btn.disabled=true;return}let ok=/\.bin$/i.test(file.name);meta.textContent=file.name+" · "+(file.size/1048576).toFixed(2)+" MB";meta.classList.add(ok?"ready":"bad");btn.disabled=!ok;if(!ok)$("manualNote").textContent="Chỉ chấp nhận file .bin.";else $("manualNote").textContent="Sẵn sàng cài trực tiếp vào HUD qua Wi-Fi."}
-$("manualFile").addEventListener("change",updateManualFileUi);
-$("manualForm").addEventListener("submit",e=>{let file=$("manualFile").files?.[0];if(!file||!/\.bin$/i.test(file.name)){e.preventDefault();toast("Hãy chọn đúng file .bin");return}if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật.")){e.preventDefault();return}$("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD..."});
-async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};try{let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast("Đã gửi HUD mẫu")}catch(_){toast("Gửi thất bại")}}
-async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tra GitHub...";try{let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;$("latest").textContent=j.latest?("v"+j.latest):"--"}catch(_){e.textContent="Không kiểm tra được."}}
-async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");$("updatebar").style.width="0%";$("updatepct").textContent="0%";e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,700)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
-async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));$("updatebar").style.width=p+"%";$("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
-async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
-async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?("Hiện tại: "+Math.round(j.temp)+"°C"):"Chưa có dữ liệu nhiệt độ"}catch(_){}}
-poll();setInterval(poll,2500);
-const L=[...document.querySelectorAll("nav a")],S=L.map(a=>document.querySelector(a.hash));
-addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offsetTop<=y)k=i});L.forEach((a,i)=>a.classList.toggle("act",i===k))},{passive:true});
-</script></main></body></html>)HTML";
-
-  html.reserve(html.length() + 1536);
-  html.replace("%IP%", ip);
-  html.replace("%VERSION%", FW_VERSION); html.replace("%VERSION%", FW_VERSION);
-  html.replace("%LATEST%", latestVersion.length() ? ("v"+latestVersion) : "--");
-  html.replace("%UPDATEMSG%", updateMessage);
-  html.replace("%UPTIME%", String(millis()/1000));
-  html.replace("%HUDSTATUS%", hud.valid ? "Đã nhận dữ liệu" : "Đang chờ điện thoại");
-  html.replace("%BLEADDR%", bleLocalAddress.length() ? bleLocalAddress : "--");
-  html.replace("%WIFISTATUS%", WiFi.status()==WL_CONNECTED ? "Đã kết nối" : (apMode ? "AP cài đặt" : "Mất kết nối"));
-  html.replace("%WIFICLASS%", WiFi.status()==WL_CONNECTED ? "ok" : "warn");
-  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
-  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
-  html.replace("%WIFION%", WiFi.status()==WL_CONNECTED ? "on" : "warn");
-  html.replace("%MIRROR%", checked(settings.mirrorHud));
-  html.replace("%ROAD%", checked(settings.showRoad));
-  html.replace("%ROUTE%", checked(settings.showRoute));
-  html.replace("%ETA%", checked(settings.showEta));
-  html.replace("%LIMIT%", checked(settings.showSpeedLimit));
-  html.replace("%APOLICE%", checked(settings.alertPolice));
-  html.replace("%ACAMERA%", checked(settings.alertCamera));
-  html.replace("%ACRASH%", checked(settings.alertCrash));
-  html.replace("%ATRAFFIC%", checked(settings.alertTraffic));
-  html.replace("%AWORK%", checked(settings.alertRoadworks));
-  html.replace("%AHAZARD%", checked(settings.alertHazard));
-  html.replace("%ASIGNS%", checked(settings.alertSigns));
-  html.replace("%SBON%", checked(settings.standbyClock));
-  html.replace("%SBLUNAR%", checked(settings.sbLunar));
-  html.replace("%SBTEMP%", checked(settings.sbTemp));
-  html.replace("%WXCITY%", String(settings.wxCity));
-  html.replace("%AUTOUPDATE%", checked(settings.autoUpdateCheck));
-  html.replace("%BRIGHT%", String(settings.brightness));
-  return html;
+<div class="card"><h2>Kiểm tra Web</h2><div class="stat">/ping → OK</div><div id="msg"></div></div>
+</main><script>
+const $=id=>document.getElementById(id);let hydrated=false;
+$("bright").addEventListener("input",()=>$("brightVal").textContent=$("bright").value+"%");
+async function state(){
+ try{
+  let r=await fetch("/state",{cache:"no-store"}),j=await r.json();
+  $("ver").textContent="v"+j.version;$("ip").textContent=j.ip;
+  $("status").innerHTML=(j.wifi?'<span class="ok">Wi-Fi OK</span>':'<span class="warn">'+(j.ap_mode?'AP setup':'Wi-Fi mất')+'</span>')+" · "+(j.ble?'BLE connected':'BLE ready');
+  $("heap").textContent="Heap "+Math.round(j.heap_free/1024)+" KB · largest "+Math.round((j.heap_largest||0)/1024)+" KB";
+  $("temp").textContent=j.temp!==undefined?("Nhiệt độ: "+Number(j.temp).toFixed(1)+" °C · "+(j.city||"")):"Nhiệt độ: chưa có dữ liệu";
+  $("ota").textContent=j.ota_message||j.ota_status||"--";
+  if(!hydrated){
+   ["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp"].forEach(k=>{if($(k))$(k).checked=!!j[k]});
+   $("bright").value=j.bright||100;$("brightVal").textContent=$("bright").value+"%";
+   $("layout").value=String(j.layout??3);$("wx_city").value=String(j.wx_city??0);hydrated=true;
+  }
+ }catch(e){$("status").textContent="Không đọc được /state";$("msg").textContent=String(e)}
 }
+async function checkUpdate(){try{let r=await fetch("/update-check",{method:"POST"}),j=await r.json();$("ota").textContent=j.message}catch(e){$("ota").textContent="Lỗi kiểm tra OTA"}}
+async function installUpdate(){if(!confirm("Cập nhật firmware? Không tắt nguồn."))return;try{let r=await fetch("/update-online",{method:"POST"});$("ota").textContent=await r.text()}catch(e){$("ota").textContent="Không gửi được lệnh OTA"}}
+state();setInterval(state,3000);
+</script></body></html>
+)HTML";
 
 void setupServer() {
   server.on("/", HTTP_GET, []() {
-    server.sendHeader("Cache-Control","no-store");
-    server.send(200, "text/html; charset=utf-8", pageHtml());
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, PSTR("text/html; charset=utf-8"), SETTINGS_PAGE);
+  });
+
+  server.on("/ping", HTTP_GET, []() {
+    server.send(200, "text/plain", "OK");
   });
 
   server.on("/hud", HTTP_POST, []() {
@@ -3482,6 +3449,9 @@ void setupServer() {
     settings.showRoute = server.hasArg("route");
     settings.showEta = server.hasArg("eta");
     settings.showSpeedLimit = server.hasArg("limit");
+    settings.showLanes = server.hasArg("lane");
+    settings.useMph = server.hasArg("mph");
+    settings.hudStyle = (uint8_t)constrain(server.arg("layout").toInt(), 0, 5);
     settings.alertPolice = server.hasArg("a_police");
     settings.alertCamera = server.hasArg("a_camera");
     settings.alertCrash = server.hasArg("a_crash");
@@ -3652,8 +3622,18 @@ void setupServer() {
     d["wifi_disconnect_reason"]=(int)lastWifiDisconnectReason;
     d["ota_status"]=otaStatus; d["ota_message"]=updateMessage; d["ota_percent"]=otaPercent;
     d["ota_free_space"]=(uint32_t)ESP.getFreeSketchSpace();
-    d["renderer"]="lvgl"; d["heap_free"]=(uint32_t)ESP.getFreeHeap();
+    d["renderer"]="lvgl";
+    d["heap_free"]=(uint32_t)ESP.getFreeHeap();
+    d["heap_largest"]=(uint32_t)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     d["studio_service"]=STUDIO_SERVICE_UUID; d["studio"]="web-bluetooth";
+    d["mirror"]=settings.mirrorHud; d["road"]=settings.showRoad; d["route"]=settings.showRoute;
+    d["eta"]=settings.showEta; d["limit"]=settings.showSpeedLimit; d["lane"]=settings.showLanes;
+    d["mph"]=settings.useMph; d["bright"]=settings.brightness; d["wx_city"]=settings.wxCity;
+    d["a_police"]=settings.alertPolice; d["a_camera"]=settings.alertCamera;
+    d["a_crash"]=settings.alertCrash; d["a_traffic"]=settings.alertTraffic;
+    d["a_work"]=settings.alertRoadworks; d["a_hazard"]=settings.alertHazard;
+    d["a_signs"]=settings.alertSigns; d["sb_on"]=settings.standbyClock;
+    d["sb_lunar"]=settings.sbLunar; d["sb_temp"]=settings.sbTemp;
     d["ap_mode"]=apMode; d["ble"]=bleConnected; d["hud"]=hud.valid; d["age_ms"]=hud.valid?millis()-hud.updatedAt:0;
     d["alert_code"]=hud.alertCode; d["alert_distance_m"]=hud.alertDistanceM;
     d["alert_value"]=hud.alertValue; d["alert_count"]=hud.alertCount;
@@ -3666,6 +3646,10 @@ void setupServer() {
 
   server.onNotFound([](){if(apMode){server.sendHeader("Location","http://192.168.4.1/",true);server.send(302,"text/plain","");}else server.send(404,"text/plain","Not found");});
   server.begin();
+  Serial.print("Web UI ready: http://");
+  Serial.print(apMode ? WiFi.softAPIP() : WiFi.localIP());
+  Serial.println("/");
+  Serial.println("Web health: /ping");
 }
 
 void logHeapSnapshot(const char *label) {
@@ -3919,6 +3903,22 @@ void setup() {
 
   updateBootProgress(100, "READY");
   delay(450);
+
+  if (settings.sbTemp && WiFi.status() == WL_CONNECTED && !bleConnected) {
+    size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (freeInternal >= 40000 && largestInternal >= 28000) {
+      logHeapSnapshot("before initial weather");
+      wxTried = true;
+      wxLastTry = millis() ? millis() : 1;
+      if (fetchWeatherOnce()) {
+        wxLastOk = wxLastTry;
+        wxDirty = true;
+      }
+      logHeapSnapshot("after initial weather");
+    }
+  }
+
   drawWaiting();
 
   Serial.print("Waze HUD IP: ");
@@ -3999,7 +3999,7 @@ void loop() {
     size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     size_t largestInternal = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
 
-    if (freeInternal >= 90000 && largestInternal >= 45000) {
+    if (freeInternal >= 42000 && largestInternal >= 30000) {
       autoUpdateCheckPending = false;
       logHeapSnapshot("before deferred OTA check");
       checkForUpdate();
