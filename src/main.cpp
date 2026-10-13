@@ -3813,7 +3813,7 @@ function toast(t){let e=$("toast");e.textContent=t;e.classList.add("show");setTi
 function setUpdateProgress(p,busy=false){p=Math.max(0,Math.min(100,Number(p||0)));let b=$("updatebar");b.classList.toggle("busy",!!busy);if(!busy)b.style.width=p+"%";$("updatepct").textContent=busy?"Đang chuẩn bị…":Math.round(p)+"%"}
 function updateManualFileUi(){let file=$("manualFile").files?.[0],meta=$("manualMeta"),btn=$("manualBtn");meta.className="filemeta";if(!file){meta.textContent="Chưa chọn file .bin";btn.disabled=true;return}let ok=/\.bin$/i.test(file.name);meta.textContent=file.name+" · "+(file.size/1048576).toFixed(2)+" MB";meta.classList.add(ok?"ready":"bad");btn.disabled=!ok;if(!ok)$("manualNote").textContent="Chỉ chấp nhận file .bin.";else $("manualNote").textContent="Sẵn sàng cài trực tiếp vào HUD qua Wi-Fi."}
 $("manualFile").addEventListener("change",updateManualFileUi);
-$("manualForm").addEventListener("submit",e=>{e.preventDefault();let form=$("manualForm"),file=$("manualFile").files?.[0];if(!file||!/\.bin$/i.test(file.name)){toast("Hãy chọn đúng file .bin");return}if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật."))return;$("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD...";setUpdateProgress(0,true);let x=new XMLHttpRequest();x.open("POST","/update-upload");x.upload.onprogress=ev=>{if(ev.lengthComputable)setUpdateProgress(ev.loaded*100/ev.total,false)};x.onload=()=>{if(x.status>=200&&x.status<300){setUpdateProgress(100,false);$("updatemsg").textContent="Upload xong, HUD đang xác minh và khởi động lại..."}else{$("updatemsg").textContent=x.responseText||"Upload firmware thất bại";setUpdateProgress(0,false);$("manualBtn").disabled=false}};x.onerror=()=>{$("updatemsg").textContent="Mất kết nối khi upload firmware.";setUpdateProgress(0,false);$("manualBtn").disabled=false};x.send(new FormData(form))});
+$("manualForm").addEventListener("submit",e=>{e.preventDefault();let form=$("manualForm"),file=$("manualFile").files?.[0];if(!file||!/\.bin$/i.test(file.name)){toast("Hãy chọn đúng file .bin");return}if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật."))return;$("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD...";setUpdateProgress(0,true);let x=new XMLHttpRequest();x.open("POST","/update-upload");x.upload.onprogress=ev=>{if(ev.lengthComputable){let p=ev.loaded*100/ev.total;setUpdateProgress(p,false);$("updatemsg").textContent="Đang tải firmware từ máy lên HUD... "+Math.round(p)+"%"}};x.onload=()=>{if(x.status>=200&&x.status<300){setUpdateProgress(100,false);$("updatemsg").textContent="Upload xong, HUD đang xác minh và khởi động lại..."}else{$("updatemsg").textContent=x.responseText||"Upload firmware thất bại";setUpdateProgress(0,false);$("manualBtn").disabled=false}};x.onerror=()=>{$("updatemsg").textContent="Mất kết nối khi upload firmware.";setUpdateProgress(0,false);$("manualBtn").disabled=false};x.send(new FormData(form))});
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};try{let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast("Đã gửi HUD mẫu")}catch(_){toast("Gửi thất bại")}}
 async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tra GitHub...";try{let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;$("latest").textContent=j.latest?("v"+j.latest):"--"}catch(_){e.textContent="Không kiểm tra được."}}
 async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");setUpdateProgress(0,true);e.textContent="Đang xếp hàng cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,120);else setUpdateProgress(0,false)}catch(_){e.textContent="Không gửi được lệnh cập nhật.";setUpdateProgress(0,false)}}
@@ -3889,7 +3889,7 @@ void setupServer() {
 
     String etag = String("\"") + FW_VERSION + "\"";
     server.sendHeader("ETag", etag);
-    server.sendHeader("Cache-Control", "private, max-age=3600");
+    server.sendHeader("Cache-Control", "private, no-cache, max-age=0, must-revalidate");
     server.sendHeader("X-WazeHUD-Version", FW_VERSION);
 
     if (server.hasHeader("If-None-Match") && server.header("If-None-Match") == etag) {
@@ -4040,10 +4040,14 @@ void setupServer() {
         otaInProgress = true;
         otaPercent = 1;
         otaStatus = "writing";
-        updateMessage = "Đang nhận firmware thủ công...";
+        otaBytesWritten = 0;
+        otaBytesTotal = (size_t)max(0, server.clientContentLength());
+        updateMessage = "Đang nhận firmware thủ công 1%";
         drawOtaProgressScreen(1, "RECEIVING LOCAL FIRMWARE", true);
         Serial.print("Manual OTA start: ");
-        Serial.println(upload.filename);
+        Serial.print(upload.filename);
+        Serial.print(", request bytes=");
+        Serial.println((unsigned long)otaBytesTotal);
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
           Update.printError(Serial);
           otaStatus = "failed";
@@ -4054,17 +4058,40 @@ void setupServer() {
           if (wrote != upload.currentSize) {
             Update.printError(Serial);
             otaStatus = "failed";
+          } else {
+            otaBytesWritten = upload.totalSize;
+            uint8_t pct = otaPercent;
+            if (otaBytesTotal > 0) {
+              // Content-Length includes a small multipart envelope, so reserve
+              // 99-100% for final verification/completion.
+              size_t calc = 1 + (otaBytesWritten * (size_t)97) / otaBytesTotal;
+              if (calc > 98) calc = 98;
+              pct = (uint8_t)calc;
+            }
+            if (pct != otaPercent) {
+              otaPercent = pct;
+              updateMessage = "Đang nhận firmware thủ công " + String(pct) + "%";
+              drawOtaProgressScreen(pct, "RECEIVING LOCAL FIRMWARE");
+            }
           }
         }
       } else if (upload.status == UPLOAD_FILE_END) {
+        otaBytesWritten = upload.totalSize;
+        otaPercent = 99;
+        updateMessage = "Đang xác minh firmware thủ công...";
+        drawOtaProgressScreen(99, "VERIFYING LOCAL FIRMWARE");
+
         if (!Update.hasError() && Update.end(true) && Update.isFinished()) {
+          otaPercent = 100;
           otaStatus = "success";
           updateMessage = "Firmware thủ công đã ghi xong";
+          drawOtaProgressScreen(100, "UPDATE COMPLETE");
           Serial.print("Manual OTA success, bytes=");
           Serial.println((unsigned long)upload.totalSize);
         } else {
           Update.printError(Serial);
           otaStatus = "failed";
+          otaPercent = 0;
           updateMessage = "Firmware thủ công lỗi xác minh";
         }
         otaInProgress = false;
