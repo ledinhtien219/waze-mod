@@ -116,3 +116,14 @@ AHT10: 27.1 C, 58.0 %RH
 
 AHT10 is the preferred temperature source for the standby screen and Web Settings.
 Open-Meteo is used only as a fallback if the sensor is absent or stops responding.
+
+
+## Web Settings fast mode
+
+Firmware v1.8.1 temporarily disables Wi-Fi modem sleep while the local Settings page is
+actively used. Static HTML is cached briefly in the browser, and `/state` JSON is
+streamed directly to the TCP client without building a temporary String. Wi-Fi sleep is
+restored automatically after the browser has been idle for 15 seconds.
+
+The boot progress indicator is a custom track/fill object so the cyan fill remains visible
+independently of LVGL theme defaults.
