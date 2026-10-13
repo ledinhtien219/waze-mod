@@ -74,7 +74,7 @@ static const uint32_t HUD_TIMEOUT_MS = 6000;
 // If the phone link stays lost this long, fall back to the standby clock screen.
 static const uint32_t STANDBY_AFTER_LOST_MS = 30000;
 static const int WX_CITY_COUNT = 12;
-static const char *FW_VERSION = "1.8.1";
+static const char *FW_VERSION = "1.8.2";
 static const char *GITHUB_REPO = "ledinhtien219/waze-mod";
 static const char *OTA_MANIFEST_URL = "https://ledinhtien219.github.io/waze-mod/firmware.json";
 
@@ -1173,6 +1173,29 @@ void lvUiPump() {
   lv_timer_handler();
 }
 
+void lvUiRefreshNow() {
+  // Progress screens run inside blocking setup/OTA code where LVGL's periodic
+  // refresh timer might not get a chance to fire. Force an immediate render.
+  lv_obj_invalidate(lv_scr_act());
+  lv_refr_now(nullptr);
+}
+
+void drawTftProgressBar(int x, int y, int w, int h, uint8_t percent, bool done) {
+  percent = constrain((int)percent, 0, 100);
+  int radius = h / 2;
+  int innerW = w - 4;
+  int fillW = (innerW * percent) / 100;
+  if (percent > 0 && fillW < 6) fillW = 6;
+
+  // Redraw the whole track every time so decreasing/resetting progress is clean.
+  tft.fillRoundRect(x, y, w, h, radius, C_DARK);
+  tft.drawRoundRect(x, y, w, h, radius, C_LINE_DIM);
+  if (fillW > 0) {
+    tft.fillRoundRect(x + 2, y + 2, fillW, h - 4, (h - 4) / 2,
+                      done ? C_GREEN : C_CYAN);
+  }
+}
+
 void lvUiClear(LvUiMode mode) {
   LvUiMode previousMode = lvUiMode;
   lv_obj_clean(lv_scr_act());
@@ -1883,9 +1906,9 @@ void updateBootProgress(uint8_t percent, const String &stage) {
 
   lv_obj_invalidate(uiBootBar);
   lv_obj_invalidate(uiBootFill);
-  lvUiPump();
-  delay(4);
-  lvUiPump();
+  lvUiRefreshNow();
+  drawTftProgressBar(30, 187, 260, 18, percent, percent >= 100);
+  delay(2);
 }
 
 // ---- LUNAR BEGIN ----
@@ -2661,7 +2684,11 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
     lv_obj_set_style_bg_opa(uiOtaBar, LV_OPA_COVER, LV_PART_MAIN);
     lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_MAIN);
     lv_obj_set_style_bg_color(uiOtaBar, lc(0x27DFFF), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_opa(uiOtaBar, LV_OPA_COVER, LV_PART_INDICATOR);
     lv_obj_set_style_radius(uiOtaBar, 9, LV_PART_INDICATOR);
+    lv_obj_set_style_border_width(uiOtaBar, 1, LV_PART_MAIN);
+    lv_obj_set_style_border_color(uiOtaBar, lc(0x29415E), LV_PART_MAIN);
+    lv_obj_set_style_border_opa(uiOtaBar, LV_OPA_COVER, LV_PART_MAIN);
     lv_bar_set_range(uiOtaBar, 0, 100);
 
     uiOtaPercent = makeLabel(lv_scr_act(), 0, 164, 320, 34, &lv_font_montserrat_24, lc(0xF5F8FF), LV_TEXT_ALIGN_CENTER);
@@ -2680,7 +2707,10 @@ void drawOtaProgressScreen(uint8_t percent, const String &stage, bool reset) {
     lv_obj_set_style_text_color(uiOtaStage, lc(0x39E889), 0);
     lv_obj_set_style_text_color(uiOtaPercent, lc(0x39E889), 0);
   }
-  lvUiPump();
+
+  lv_obj_invalidate(uiOtaBar);
+  lvUiRefreshNow();
+  drawTftProgressBar(28, 137, 264, 18, percent, percent >= 100);
 }
 
 
@@ -3467,11 +3497,17 @@ bool installOnlineUpdate() {
     return false;
   }
 
-  if (!latestFirmwareUrl.length()) {
-    if (!checkForUpdate() || !latestFirmwareUrl.length()) {
+  if (!latestFirmwareUrl.length() || !updateAvailable) {
+    if (!checkForUpdate()) {
       otaStatus = "failed";
       return false;
     }
+  }
+
+  if (!updateAvailable || !latestFirmwareUrl.length()) {
+    otaStatus = "idle";
+    otaPercent = 0;
+    return false;
   }
 
   size_t freeSketch = ESP.getFreeSketchSpace();
@@ -3740,14 +3776,14 @@ input[type=text],input[type=password]{width:100%;padding:14px;border-radius:12px
 select{padding:11px 12px;border-radius:12px;border:1px solid #2a3b52;background:#08101a;color:#fff;font-size:14px;max-width:150px;outline:0}input[type=file]{width:100%;padding:12px;border-radius:12px;border:1px dashed #34506f;background:#08101a;color:var(--mu);font-size:13px}.filebox{margin-top:14px;padding:14px;border:1px solid #29445f;border-radius:16px;background:linear-gradient(180deg,#0b1826,#08111b)}.filehead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}.filehead b{font-size:14px}.filetag{font-size:10px;letter-spacing:1px;color:var(--cy);border:1px solid #245270;background:#0a2231;border-radius:99px;padding:4px 8px;font-weight:800}.filemeta{margin:8px 2px 0;color:#a8bad0;font-size:12px;word-break:break-all}.filemeta.ready{color:var(--gr)}.filemeta.bad{color:var(--rd)}.filebox button{margin-top:10px}
 button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px;background:var(--g);color:#031321;width:100%;margin-top:8px;cursor:pointer;transition:.15s}button:active{transform:scale(.97)}button.sec{background:#17263a;color:var(--tx);border:1px solid #27405c}button:disabled{opacity:.5}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.st{padding:12px;border-radius:13px;background:#08121d;border:1px solid #17283b;color:var(--mu);margin:10px 0;font-size:13px}.ok{color:var(--gr)}.warn{color:var(--am)}
-.pb{height:10px;background:#08121d;border:1px solid #1f3248;border-radius:99px;overflow:hidden}.pb div{height:100%;width:0;background:var(--g);transition:width .3s}.pct{text-align:right;color:var(--mu);font-size:12px;margin-top:4px}
+.pb{height:14px;background:#08121d;border:1px solid #29415e;border-radius:99px;overflow:hidden;box-shadow:inset 0 0 0 1px #050a11}.pb div{height:100%;width:0;background:linear-gradient(90deg,#19bfe8,#4ff2ff);border-radius:99px;transition:width .22s;box-shadow:0 0 12px #19dfff55}.pb div.busy{width:34%!important;animation:otaSweep .8s infinite alternate ease-in-out}@keyframes otaSweep{from{transform:translateX(-85%)}to{transform:translateX(285%)}}.pct{text-align:right;color:#b8cce3;font-size:12px;font-weight:700;margin-top:5px}
 .mono{font:12px ui-monospace,Menlo,monospace;color:#9fb6d3;word-break:break-all}
 .bar{position:fixed;left:0;right:0;bottom:0;z-index:9;padding:12px 14px calc(12px + env(safe-area-inset-bottom));background:linear-gradient(0deg,#06080d 55%,#06080d00);transform:translateY(120%);transition:.25s}.bar.show{transform:none}.bar div{max-width:720px;margin:auto;display:flex;gap:10px;align-items:center}.bar span{flex:1;font-size:13px;color:var(--am);font-weight:650}.bar button{width:auto;margin:0;padding:14px 26px}
 .toast{position:fixed;left:50%;top:calc(16px + env(safe-area-inset-top));transform:translate(-50%,-300%);opacity:0;background:#0f2b1e;border:1px solid #1c6b45;color:#7dffb8;padding:11px 18px;border-radius:14px;font-weight:700;z-index:20;transition:.3s;pointer-events:none}.toast.show{transform:translate(-50%,0);opacity:1}
 .foot{text-align:center;color:#55677f;font-size:11.5px;margin:26px 0 8px}
 @media(max-width:520px){.hero{grid-template-columns:1fr;justify-items:center;text-align:center}.hero .kv{justify-content:center}.grid{grid-template-columns:1fr}input[type=range]{width:110px}}
 </style></head><body><main>
-<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.1</div></div>
+<div class="top"><div class="logo"><i>W</i><div><b>WAZE <span>HUD</span></b><small>ESP32 · ILI9341 320×240</small></div></div><div class="ver" id="ver">v1.8.2</div></div>
 <div class="chips"><div class="chip" id="cBle">BLE</div><div class="chip warn" id="cWifi">Wi-Fi</div><div class="chip" id="cHud">HUD</div><div class="chip on" id="cIp">--</div></div>
 
 <div class="hero"><div class="scr" id="scr"><div class="sp">62<small>KM/H</small></div><div class="lim" id="pLim">60</div><div class="al" id="pAl">CAMERA 500m</div><div class="tn">➜</div><div class="ds">350 m</div><div class="rd" id="pRd">Võ Nguyên Giáp</div><div class="rt" id="pRt">QL1A</div><div class="et" id="pEt">10:42</div></div>
@@ -3794,7 +3830,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 </div></section>
 
 <section id="s5"><h2>Cập nhật firmware</h2><div class="card" style="padding-bottom:16px">
-<div class="row"><div><b>Phiên bản hiện tại</b></div><b>v1.7.7</b></div>
+<div class="row"><div><b>Phiên bản hiện tại</b></div><b id="currentFw">v1.8.2</b></div>
 <div class="row"><div><b>Phiên bản online</b></div><b id="latest" class="ok">--</b></div>
 <div class="row"><div><b>Tự kiểm tra khi khởi động</b></div><label class="sw"><input id="autoupdate" type="checkbox"  onchange="saveAuto()"><s></s></label></div>
 <div id="updatemsg" class="st">Chưa kiểm tra</div>
@@ -3805,7 +3841,7 @@ button{border:0;border-radius:13px;padding:14px;font-weight:800;font-size:14.5px
 </div></section>
 
 <section id="s6"><h2>Thông tin thiết bị</h2><div class="card">
-<div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b>v1.7.7</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
+<div class="row"><div>Thiết bị</div><b>ESP32 DevKit V1</b></div><div class="row"><div>Màn hình</div><b>ILI9341 320×240</b></div><div class="row"><div>Firmware</div><b id="deviceFw">v1.8.2</b></div><div class="row"><div>Wi-Fi SSID</div><b id="ssid">--</b></div>
 </div></section>
 <div class="foot">Waze HUD Mod · ledinhtien219</div>
 <div class="toast" id="toast"></div>
@@ -3815,16 +3851,17 @@ $("wx_city").value="0";
 function pv(){$("scr").classList.toggle("mir",$("mirror").checked);$("pRd").classList.toggle("off",!$("road").checked);$("pRt").classList.toggle("off",!$("route").checked);$("pEt").classList.toggle("off",!$("eta").checked);$("pLim").classList.toggle("off",!$("limit").checked);$("pAl").classList.toggle("off",!$("a_camera").checked);$("scr").style.filter="brightness("+(0.35+$("bright").value/100*.65)+")";$("bo").textContent=$("bright").value+"%"}
 f.addEventListener("input",()=>{pv();bar.classList.add("show")});pv();
 function toast(t){let e=$("toast");e.textContent=t;e.classList.add("show");setTimeout(()=>e.classList.remove("show"),2200)}
+function setUpdateProgress(p,busy=false){p=Math.max(0,Math.min(100,Number(p||0)));let b=$("updatebar");b.classList.toggle("busy",!!busy);if(!busy)b.style.width=p+"%";$("updatepct").textContent=busy?"Đang chuẩn bị…":Math.round(p)+"%"}
 function updateManualFileUi(){let file=$("manualFile").files?.[0],meta=$("manualMeta"),btn=$("manualBtn");meta.className="filemeta";if(!file){meta.textContent="Chưa chọn file .bin";btn.disabled=true;return}let ok=/\.bin$/i.test(file.name);meta.textContent=file.name+" · "+(file.size/1048576).toFixed(2)+" MB";meta.classList.add(ok?"ready":"bad");btn.disabled=!ok;if(!ok)$("manualNote").textContent="Chỉ chấp nhận file .bin.";else $("manualNote").textContent="Sẵn sàng cài trực tiếp vào HUD qua Wi-Fi."}
 $("manualFile").addEventListener("change",updateManualFileUi);
-$("manualForm").addEventListener("submit",e=>{let file=$("manualFile").files?.[0];if(!file||!/\.bin$/i.test(file.name)){e.preventDefault();toast("Hãy chọn đúng file .bin");return}if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật.")){e.preventDefault();return}$("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD..."});
+$("manualForm").addEventListener("submit",e=>{e.preventDefault();let form=$("manualForm"),file=$("manualFile").files?.[0];if(!file||!/\.bin$/i.test(file.name)){toast("Hãy chọn đúng file .bin");return}if(!confirm("Cài "+file.name+" vào HUD? Không tắt nguồn trong lúc cập nhật."))return;$("manualBtn").disabled=true;$("updatemsg").textContent="Đang tải firmware từ máy lên HUD...";setUpdateProgress(0,true);let x=new XMLHttpRequest();x.open("POST","/update-upload");x.upload.onprogress=ev=>{if(ev.lengthComputable)setUpdateProgress(ev.loaded*100/ev.total,false)};x.onload=()=>{if(x.status>=200&&x.status<300){setUpdateProgress(100,false);$("updatemsg").textContent="Upload xong, HUD đang xác minh và khởi động lại..."}else{$("updatemsg").textContent=x.responseText||"Upload firmware thất bại";setUpdateProgress(0,false);$("manualBtn").disabled=false}};x.onerror=()=>{$("updatemsg").textContent="Mất kết nối khi upload firmware.";setUpdateProgress(0,false);$("manualBtn").disabled=false};x.send(new FormData(form))});
 async function sendTest(){let b={turn:"right",distance_m:350,road:"Vo Nguyen Giap",speed:62,speed_limit:60,remaining_km:8.6,eta:"10:42",route:"QL1A",alert:{type:"camera",distance_m:500}};try{let r=await fetch("/hud",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});$("testmsg").textContent=await r.text();toast("Đã gửi HUD mẫu")}catch(_){toast("Gửi thất bại")}}
 async function checkUpdate(){let e=$("updatemsg");e.textContent="Đang kiểm tra GitHub...";try{let r=await fetch("/update-check",{method:"POST"});let j=await r.json();e.textContent=j.message;$("latest").textContent=j.latest?("v"+j.latest):"--"}catch(_){e.textContent="Không kiểm tra được."}}
-async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");$("updatebar").style.width="0%";$("updatepct").textContent="0%";e.textContent="Đang gửi lệnh cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,700)}catch(_){e.textContent="Không gửi được lệnh cập nhật."}}
-async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0)));$("updatebar").style.width=p+"%";$("updatepct").textContent=p+"%";e.textContent=j.message||j.status;if(j.status==="failed")return;if(j.status==="success"){e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}setTimeout(pollUpdate,650)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,1200)}}
+async function installUpdate(){if(!confirm("Cập nhật firmware ngay? Không tắt nguồn trong quá trình cập nhật."))return;let e=$("updatemsg");setUpdateProgress(0,true);e.textContent="Đang xếp hàng cập nhật...";try{let r=await fetch("/update-online",{method:"POST"});let t=await r.text();e.textContent=t;if(r.ok)setTimeout(pollUpdate,120);else setUpdateProgress(0,false)}catch(_){e.textContent="Không gửi được lệnh cập nhật.";setUpdateProgress(0,false)}}
+async function pollUpdate(){let e=$("updatemsg");try{let r=await fetch("/update-status",{cache:"no-store"});let j=await r.json();let p=Math.max(0,Math.min(100,Number(j.percent||0))),active=["queued","checking","downloading","writing"].includes(j.status);setUpdateProgress(p,active&&p<=1);e.textContent=j.message||j.status;if(j.status==="failed"){setUpdateProgress(p,false);return}if(j.status==="success"){setUpdateProgress(100,false);e.textContent="Cập nhật thành công, ESP32 đang khởi động lại...";return}if(j.status==="idle"&&!active){setUpdateProgress(p,false);return}setTimeout(pollUpdate,350)}catch(_){e.textContent="ESP32 đang cập nhật hoặc khởi động lại...";setTimeout(pollUpdate,800)}}
 async function saveAuto(){try{await fetch("/update-auto?enabled="+($("autoupdate").checked?1:0),{method:"POST"});toast("Đã lưu")}catch(_){}}
-async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?(j.temp_source==="aht10"?("AHT10: "+Number(j.temp).toFixed(1)+"°C · "+Number(j.humidity||0).toFixed(0)+"% RH"):("Ngoài trời: "+Number(j.temp).toFixed(1)+"°C")):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
-poll();setInterval(poll,4000);
+async function poll(){try{let r=await fetch("/state",{cache:"no-store"});let j=await r.json();$("cBle").className="chip"+(j.ble?" on":"");$("cBle").textContent=j.ble?"BLE đã kết nối":"BLE chờ";$("cWifi").className="chip"+(j.wifi?" on":" warn");$("cWifi").textContent=j.wifi?"Wi-Fi OK":(j.ap_mode?"AP cài đặt":"Wi-Fi mất");$("cHud").className="chip"+(j.hud&&j.age_ms<6000?" on":"");$("cHud").textContent=j.hud&&j.age_ms<6000?"HUD đang chạy":"HUD chờ dữ liệu";if($("cIp"))$("cIp").textContent=j.ip||"--";if($("ver"))$("ver").textContent="v"+(j.version||"--");if($("currentFw"))$("currentFw").textContent="v"+(j.version||"--");if($("deviceFw"))$("deviceFw").textContent="v"+(j.version||"--");$("heap").textContent=Math.round(j.heap_free/1024)+" KB";$("ssid").textContent=j.ssid||"--";$("cityNow").textContent=j.temp!==undefined?(j.temp_source==="aht10"?("AHT10: "+Number(j.temp).toFixed(1)+"°C · "+Number(j.humidity||0).toFixed(0)+"% RH"):("Ngoài trời: "+Number(j.temp).toFixed(1)+"°C")):"Chưa có dữ liệu nhiệt độ";if(!hydrated){const B=["mirror","road","route","eta","limit","lane","mph","a_police","a_camera","a_crash","a_traffic","a_work","a_hazard","a_signs","sb_on","sb_lunar","sb_temp","autoupdate"];B.forEach(k=>{let e=document.querySelector('[name="'+k+'"]');if(e)e.checked=!!j[k]});if($("bright")){$("bright").value=j.bright||100;$("bo").textContent=$("bright").value+"%"}if($("wx_city"))$("wx_city").value=String(j.wx_city??0);let lay=document.querySelector('[name="layout"]');if(lay)lay.value=String(j.layout??3);hydrated=true;pv()}}catch(_){} }
+poll();setInterval(()=>{if(document.visibilityState==="visible")poll()},7000);
 const L=[...document.querySelectorAll("nav a")],S=L.map(a=>document.querySelector(a.hash));
 addEventListener("scroll",()=>{let y=scrollY+120,k=0;S.forEach((s,i)=>{if(s.offsetTop<=y)k=i});L.forEach((a,i)=>a.classList.toggle("act",i===k))},{passive:true});
 </script></main></body></html>)HTML";
@@ -3841,19 +3878,30 @@ void beginWebFastMode() {
 }
 
 void maintainWebFastMode() {
-  if (!webFastMode) return;
-  if ((int32_t)(millis() - webFastModeUntil) < 0) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    webFastMode = false;
+    return;
+  }
 
-  WiFi.setSleep(true);
-  webFastMode = false;
-  Serial.println("Web fast mode: Wi-Fi sleep ON");
+  bool recentWeb = lastWebActivity && (int32_t)(millis() - webFastModeUntil) < 0;
+  bool wantFast = !bleConnected || recentWeb;
+
+  if (wantFast && !webFastMode) {
+    WiFi.setSleep(false);
+    webFastMode = true;
+    Serial.println("Web fast mode: Wi-Fi sleep OFF");
+  } else if (!wantFast && webFastMode) {
+    WiFi.setSleep(true);
+    webFastMode = false;
+    Serial.println("Web fast mode: Wi-Fi sleep ON / BLE coexist");
+  }
 }
 
 void setupServer() {
   server.enableDelay(false);
   server.on("/", HTTP_GET, []() {
     beginWebFastMode();
-    server.sendHeader("Cache-Control", "private, max-age=120");
+    server.sendHeader("Cache-Control", "private, max-age=600");
     server.sendHeader("X-WazeHUD-Version", FW_VERSION);
     server.send_P(200, PSTR("text/html; charset=utf-8"),
                   SETTINGS_PAGE, sizeof(SETTINGS_PAGE) - 1);
@@ -3959,25 +4007,18 @@ void setupServer() {
       return;
     }
 
-    if (!updateAvailable && !checkForUpdate()) {
-      server.send(500, "text/plain; charset=utf-8", updateMessage);
-      return;
-    }
-
-    if (!updateAvailable) {
-      server.send(409, "text/plain; charset=utf-8", "Không có bản cập nhật mới.");
-      return;
-    }
-
     otaStatus = "queued";
-    updateMessage = "Đã nhận lệnh cập nhật v" + latestVersion;
+    otaPercent = 0;
+    otaBytesWritten = 0;
+    otaBytesTotal = 0;
+    updateMessage = "Đã nhận lệnh OTA, đang chuẩn bị...";
     otaRequestedAt = millis();
     otaRequested = true;
 
-    // Return immediately. The actual HTTPS download + flash write starts from
-    // loop(), after the browser has received this response.
+    // Return immediately. Version check + HTTPS download + flash write all run
+    // from loop(), so the browser can show progress without waiting on TLS.
     server.send(202, "text/plain; charset=utf-8",
-                "Đã bắt đầu cập nhật v" + latestVersion + ". Không tắt nguồn.");
+                "Đã nhận lệnh cập nhật. Đang kiểm tra phiên bản online...");
   });
 
 
@@ -4003,9 +4044,10 @@ void setupServer() {
       HTTPUpload &upload = server.upload();
       if (upload.status == UPLOAD_FILE_START) {
         otaInProgress = true;
-        otaPercent = 0;
+        otaPercent = 1;
         otaStatus = "writing";
         updateMessage = "Đang nhận firmware thủ công...";
+        drawOtaProgressScreen(1, "RECEIVING LOCAL FIRMWARE", true);
         Serial.print("Manual OTA start: ");
         Serial.println(upload.filename);
         if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {
@@ -4051,10 +4093,11 @@ void setupServer() {
     d["total"] = (uint32_t)otaBytesTotal;
     d["percent"] = otaPercent;
     d["free_ota"] = (uint32_t)ESP.getFreeSketchSpace();
-    String out;
-    serializeJson(d, out);
+    size_t jsonLen = measureJson(d);
     server.sendHeader("Cache-Control", "no-store");
-    server.send(200, "application/json", out);
+    server.setContentLength(jsonLen);
+    server.send(200, "application/json", "");
+    serializeJson(d, server.client());
   });
 
   server.on("/state", HTTP_GET, []() {
@@ -4088,11 +4131,16 @@ void setupServer() {
     d["temp_source"]=ahtHasFreshReading()?"aht10":"weather";
     if (!isnan(wxTempC)) d["temp"]=wxTempC;
     if (ahtHasFreshReading()) d["humidity"]=ahtHumidity;
-    String out; serializeJson(d,out); server.send(200,"application/json",out);
+    size_t jsonLen = measureJson(d);
+    server.sendHeader("Cache-Control", "no-store");
+    server.setContentLength(jsonLen);
+    server.send(200, "application/json", "");
+    serializeJson(d, server.client());
   });
 
   server.onNotFound([](){if(apMode){server.sendHeader("Location","http://192.168.4.1/",true);server.send(302,"text/plain","");}else server.send(404,"text/plain","Not found");});
   server.begin();
+  maintainWebFastMode();
   Serial.print("Web UI ready: http://");
   Serial.print(apMode ? WiFi.softAPIP() : WiFi.localIP());
   Serial.println("/");
@@ -4406,12 +4454,16 @@ void loop() {
 
   // Execute OTA outside the WebServer request handler so the browser receives
   // HTTP 202 first and the server does not hold an open request while flashing.
-  if (otaRequested && !otaInProgress && millis() - otaRequestedAt >= 500) {
+  if (otaRequested && !otaInProgress && millis() - otaRequestedAt >= 150) {
     otaRequested = false;
     otaInProgress = true;
 
+    otaStatus = "checking";
+    otaPercent = 0;
+    updateMessage = "Đang kiểm tra bản cập nhật...";
     otaRenderedPercent = -1;
     otaRenderedStage = "";
+    drawOtaProgressScreen(0, "CHECKING UPDATE", true);
     bool ok = installOnlineUpdate();
     otaInProgress = false;
 
@@ -4419,8 +4471,10 @@ void loop() {
       delay(1000);
       ESP.restart();
     } else {
-      Serial.print("OTA final error: ");
-      Serial.println(updateMessage);
+      if (otaStatus != "idle") {
+        Serial.print("OTA final error: ");
+        Serial.println(updateMessage);
+      }
       drawWaiting();
     }
   }

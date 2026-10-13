@@ -127,3 +127,15 @@ restored automatically after the browser has been idle for 15 seconds.
 
 The boot progress indicator is a custom track/fill object so the cyan fill remains visible
 independently of LVGL theme defaults.
+
+
+## v1.8.2 progress/web responsiveness
+
+- Web Settings keeps Wi-Fi modem sleep disabled while no BLE navigation client is
+  connected, so opening the local IP no longer waits for modem wake-up.
+- `/state` and `/update-status` stream JSON directly to the socket.
+- Boot and OTA screens force LVGL refreshes and also draw the progress track directly
+  to the ILI9341, so progress remains visible during blocking startup/update work.
+- Online OTA requests return immediately; version checking and download run from
+  `loop()` while the browser polls visible progress.
+- Manual `.bin` uploads use browser XHR upload progress.
